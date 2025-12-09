@@ -246,6 +246,70 @@ def get_current_location():
         st.error(f"Error getting location: {e}")
         return None
 
+def get_weather_alerts(latitude, longitude):
+    """Get active weather alerts from National Weather Service API.
+    
+    Returns alerts for the given location including:
+    - Severe weather warnings
+    - Watches
+    - Special weather statements
+    - Advisories
+    
+    Note: NWS API only covers United States territories
+    """
+    try:
+        # NWS API endpoint - point-specific alerts
+        url = f"https://api.weather.gov/alerts/active"
+        params = {
+            'point': f"{latitude},{longitude}",
+            'status': 'actual',  # Only actual alerts, not tests/exercises
+            'message_type': 'alert,update'  # Alert messages and updates
+        }
+        
+        headers = {
+            'User-Agent': '(Weather App, github.com/jxwnpvs2mv-netizen/Weather-App)',
+            'Accept': 'application/geo+json'
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        # NWS sometimes returns 500 errors, handle gracefully
+        if response.status_code != 200:
+            return None
+            
+        data = response.json()
+        
+        if 'features' in data and len(data['features']) > 0:
+            alerts = []
+            for feature in data['features']:
+                props = feature.get('properties', {})
+                
+                # Extract alert details
+                alert = {
+                    'event': props.get('event', 'Unknown Event'),
+                    'headline': props.get('headline', ''),
+                    'description': props.get('description', ''),
+                    'instruction': props.get('instruction', ''),
+                    'severity': props.get('severity', 'Unknown'),  # Extreme, Severe, Moderate, Minor
+                    'urgency': props.get('urgency', 'Unknown'),    # Immediate, Expected, Future
+                    'certainty': props.get('certainty', 'Unknown'), # Observed, Likely, Possible
+                    'onset': props.get('onset', ''),
+                    'expires': props.get('expires', ''),
+                    'sender_name': props.get('senderName', 'NWS'),
+                    'areas': props.get('areaDesc', ''),
+                    'response': props.get('response', 'Monitor'),
+                }
+                
+                alerts.append(alert)
+            
+            return alerts
+        
+        return None
+        
+    except Exception as e:
+        # Fail silently for non-US locations or API issues
+        return None
+
 def get_weather(latitude, longitude, model='best_match'):
     """Get current weather data from Open-Meteo API with hourly forecast.
     
@@ -269,7 +333,7 @@ def get_weather(latitude, longitude, model='best_match'):
             'hourly': 'temperature_2m,precipitation_probability,precipitation,weather_code,rain,showers,snowfall',
             'temperature_unit': 'fahrenheit',
             'wind_speed_unit': 'mph',
-            'forecast_days': 1,
+            'forecast_days': 3,  # 3 days = 72 hours of hourly forecast
             'timezone': 'auto'
         }
         
@@ -778,6 +842,90 @@ def display_radar(location):
     </div>
     """, unsafe_allow_html=True)
 
+def display_weather_alerts(alerts):
+    """Display weather alerts with appropriate styling based on severity."""
+    if not alerts:
+        return
+    
+    # Sort by severity (most severe first)
+    severity_order = {'Extreme': 0, 'Severe': 1, 'Moderate': 2, 'Minor': 3, 'Unknown': 4}
+    sorted_alerts = sorted(alerts, key=lambda x: severity_order.get(x['severity'], 4))
+    
+    for alert in sorted_alerts:
+        # Determine color scheme based on severity
+        if alert['severity'] == 'Extreme':
+            bg_color = '#8B0000'  # Dark red
+            border_color = '#FF0000'
+            icon = '🚨'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Severe':
+            bg_color = '#FF4500'  # Orange red
+            border_color = '#FF6347'
+            icon = '⚠️'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Moderate':
+            bg_color = '#FFA500'  # Orange
+            border_color = '#FFD700'
+            icon = '⚠️'
+            text_color = '#000000'
+        else:  # Minor or Unknown
+            bg_color = '#4682B4'  # Steel blue
+            border_color = '#87CEEB'
+            icon = 'ℹ️'
+            text_color = '#FFFFFF'
+        
+        # Format times if available
+        onset_text = ''
+        if alert['onset']:
+            try:
+                onset_dt = datetime.fromisoformat(alert['onset'].replace('Z', '+00:00'))
+                onset_text = f"<div style='font-size: 12px; opacity: 0.9; margin-top: 5px;'>⏰ Effective: {onset_dt.strftime('%b %d, %I:%M %p')}</div>"
+            except:
+                pass
+        
+        expires_text = ''
+        if alert['expires']:
+            try:
+                expires_dt = datetime.fromisoformat(alert['expires'].replace('Z', '+00:00'))
+                expires_text = f"<div style='font-size: 12px; opacity: 0.9;'>⏱️ Expires: {expires_dt.strftime('%b %d, %I:%M %p')}</div>"
+            except:
+                pass
+        
+        # Create alert box
+        st.markdown(f"""
+        <div style='background: {bg_color}; 
+                    border-left: 5px solid {border_color}; 
+                    padding: 15px; 
+                    border-radius: 10px; 
+                    margin: 15px 0; 
+                    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+                    color: {text_color};'>
+            <div style='font-size: 24px; margin-bottom: 8px;'>{icon} <strong>{alert['event']}</strong></div>
+            <div style='font-size: 14px; opacity: 0.95; margin-bottom: 8px;'>{alert['headline']}</div>
+            {onset_text}
+            {expires_text}
+            <div style='font-size: 11px; opacity: 0.8; margin-top: 8px;'>📍 {alert['areas']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Show detailed information in an expander
+        with st.expander(f"📋 Details: {alert['event']}", expanded=False):
+            if alert['description']:
+                st.markdown(f"**Description:**\n\n{alert['description']}")
+            
+            if alert['instruction']:
+                st.markdown(f"**⚡ What To Do:**\n\n{alert['instruction']}")
+            
+            st.markdown(f"""
+            ---
+            **Alert Details:**
+            - **Severity:** {alert['severity']}
+            - **Urgency:** {alert['urgency']}
+            - **Certainty:** {alert['certainty']}
+            - **Recommended Action:** {alert['response']}
+            - **Issued By:** {alert['sender_name']}
+            """)
+
 def display_weather(location, weather_data, model_key='default'):
     """Display weather information.
     
@@ -797,6 +945,18 @@ def display_weather(location, weather_data, model_key='default'):
     # Location header
     st.markdown(f"<h1 style='text-align: center; color: #e0e0e0; margin-bottom: 5px; margin-top: 0px;'>{location['city']}</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: #aaa; margin-top: 0px; margin-bottom: 10px;'>{location['region']}, {location['country']}</p>", unsafe_allow_html=True)
+    
+    # Weather Alerts (NWS for US locations)
+    # Check for US location using multiple possible country name formats
+    country = location.get('country', '').lower()
+    is_us_location = any(us_name in country for us_name in ['united states', 'usa', 'us'])
+    
+    if is_us_location or country == 'united states':
+        alerts = get_weather_alerts(location['latitude'], location['longitude'])
+        if alerts:
+            st.markdown("<br>", unsafe_allow_html=True)
+            display_weather_alerts(alerts)
+            st.markdown("<br>", unsafe_allow_html=True)
     
     # Weather icon
     st.markdown(f"<div class='weather-icon'>{emoji}</div>", unsafe_allow_html=True)
@@ -869,7 +1029,29 @@ def display_weather(location, weather_data, model_key='default'):
                     # Display probability, defaulting to 0% if None
                     prob_display = f"{prob}%" if prob is not None else "0%"
                     st.write(f"- {time_only}: {prob_display}")
-
+    
+    # Debug: Weather Alerts Status
+    country = location.get('country', '').lower()
+    is_us_location = any(us_name in country for us_name in ['united states', 'usa', 'us'])
+    
+    with st.expander("🚨 Debug: Weather Alerts Status", expanded=False):
+        st.write(f"**Location Country:** {location.get('country')}")
+        st.write(f"**Is US Location:** {is_us_location}")
+        st.write(f"**Coordinates:** {location['latitude']}, {location['longitude']}")
+        
+        if is_us_location:
+            st.write("**Checking NWS for alerts...**")
+            test_alerts = get_weather_alerts(location['latitude'], location['longitude'])
+            if test_alerts:
+                st.success(f"✅ Found {len(test_alerts)} active alert(s)!")
+                for alert in test_alerts:
+                    st.write(f"- {alert['event']} ({alert['severity']})")
+            else:
+                st.info("ℹ️ No active weather alerts for this location.")
+                st.write("This is good news - no severe weather expected!")
+        else:
+            st.warning("⚠️ Weather alerts only available for US locations.")
+            st.write("NWS API only covers United States and territories.")
 
     
     if precip_alert:
@@ -992,24 +1174,38 @@ def display_weather(location, weather_data, model_key='default'):
                 # Ultimate fallback: start from index 0
                 start_idx = 0
         
-        # Get 24 hours starting from current hour
-        times = all_times[start_idx:start_idx+24]
-        temps = all_temps[start_idx:start_idx+24] if all_temps else []
-        weather_codes = all_weather_codes[start_idx:start_idx+24] if all_weather_codes else []
-        precip_probs = all_precip_probs[start_idx:start_idx+24] if all_precip_probs else []
+        # Get 72 hours (3 days) starting from current hour
+        hours_to_show = 72
+        times = all_times[start_idx:start_idx+hours_to_show]
+        temps = all_temps[start_idx:start_idx+hours_to_show] if all_temps else []
+        weather_codes = all_weather_codes[start_idx:start_idx+hours_to_show] if all_weather_codes else []
+        precip_probs = all_precip_probs[start_idx:start_idx+hours_to_show] if all_precip_probs else []
         
         # Create scrollable horizontal forecast
         hourly_cards = []
+        last_day = None  # Track day changes for labels
+        
         for idx in range(len(times)):
             try:
                 # Parse time (handles timezone from API response)
                 dt = datetime.fromisoformat(times[idx])
                 
-                # Show "Now" for first hour, otherwise time
+                # Check if we've crossed into a new day
+                current_day = dt.strftime("%A")  # Full day name (e.g., "Monday")
+                show_day_label = (current_day != last_day)
+                last_day = current_day
+                
+                # Show "Now" for first hour, day label for new days, otherwise time
                 if idx == 0:
                     time_str = "Now"
+                    day_label = ""
+                elif show_day_label and idx > 0:
+                    # Show day name for first hour of each new day
+                    time_str = dt.strftime("%I%p").lstrip('0')  # "2PM" format
+                    day_label = f"<div style='font-size: 10px; color: #888; margin-bottom: 2px;'>{current_day[:3]}</div>"  # "Mon"
                 else:
                     time_str = dt.strftime("%I%p").lstrip('0')  # "2PM" format
+                    day_label = ""
                 
                 # Get temperature
                 if idx < len(temps):
@@ -1045,6 +1241,7 @@ def display_weather(location, weather_data, model_key='default'):
                                 min-width: 85px;
                                 flex-shrink: 0;
                                 margin-right: 10px;'>
+                        {day_label}
                         <div style='font-size: 12px; color: #aaa; margin-bottom: 5px; font-weight: {"bold" if idx == 0 else "normal"};'>{time_str}</div>
                         <div style='font-size: 36px; margin: 8px 0;'>{weather_emoji}</div>
                         <div style='font-size: 20px; font-weight: bold; color: #e0e0e0;'>{temp_str}</div>

@@ -131,12 +131,16 @@ if 'weather_data' not in st.session_state:
     st.session_state.weather_data = None
 
 def get_location_by_name(location_name):
-    """Get coordinates for a location name using geocoding API."""
+    """Get coordinates for a location name using geocoding API.
+    
+    Intelligently ranks results to prioritize exact matches.
+    For example, "Niles, Ohio" will rank Niles, OH above Niles, IL.
+    """
     try:
         url = "https://geocoding-api.open-meteo.com/v1/search"
         params = {
             'name': location_name,
-            'count': 5,
+            'count': 10,  # Get more results to sort through
             'language': 'en',
             'format': 'json'
         }
@@ -146,7 +150,69 @@ def get_location_by_name(location_name):
         
         if 'results' in data and len(data['results']) > 0:
             results = data['results']
-            return results
+            
+            # Parse the user's input to extract city and state/region
+            parsed_input = location_name.lower().strip()
+            parts = [p.strip() for p in parsed_input.split(',')]
+            
+            # If user provided "City, State" format, prioritize exact matches
+            if len(parts) >= 2:
+                search_city = parts[0]
+                search_region = parts[1]
+                
+                # Score each result based on how well it matches
+                def score_result(result):
+                    score = 0
+                    result_city = result.get('name', '').lower()
+                    result_region = result.get('admin1', '').lower()
+                    result_country = result.get('country', '').lower()
+                    
+                    # Exact city name match (highest priority)
+                    if result_city == search_city:
+                        score += 100
+                    elif search_city in result_city:
+                        score += 50
+                    
+                    # State/Region match (very important)
+                    # Handle both full names and abbreviations (e.g., "Ohio" or "OH")
+                    if result_region == search_region:
+                        score += 80  # Exact region match
+                    elif search_region in result_region or result_region in search_region:
+                        score += 40  # Partial region match
+                    
+                    # Check if search term matches country
+                    if search_region == result_country:
+                        score += 60
+                    elif search_region in result_country:
+                        score += 30
+                    
+                    # Bonus for US locations if searching US states
+                    # (since most users search US cities with state abbreviations)
+                    us_state_abbrevs = ['al', 'ak', 'az', 'ar', 'ca', 'co', 'ct', 'de', 'fl', 'ga',
+                                       'hi', 'id', 'il', 'in', 'ia', 'ks', 'ky', 'la', 'me', 'md',
+                                       'ma', 'mi', 'mn', 'ms', 'mo', 'mt', 'ne', 'nv', 'nh', 'nj',
+                                       'nm', 'ny', 'nc', 'nd', 'oh', 'ok', 'or', 'pa', 'ri', 'sc',
+                                       'sd', 'tn', 'tx', 'ut', 'vt', 'va', 'wa', 'wv', 'wi', 'wy']
+                    
+                    if search_region in us_state_abbrevs and result_country == 'united states':
+                        score += 20
+                    
+                    # Penalty for locations with very different names
+                    if result_city != search_city and search_city not in result_city:
+                        score -= 10
+                    
+                    return score
+                
+                # Sort results by score (highest first)
+                results_with_scores = [(score_result(r), r) for r in results]
+                results_with_scores.sort(key=lambda x: x[0], reverse=True)
+                
+                # Return sorted results (top 5)
+                sorted_results = [r for score, r in results_with_scores]
+                return sorted_results[:5]
+            
+            # If no comma in search, just return results as-is
+            return results[:5]
         else:
             # Try just the city name if full search fails
             if ',' in location_name:
@@ -155,7 +221,7 @@ def get_location_by_name(location_name):
                 response = requests.get(url, params=params, timeout=10)
                 data = response.json()
                 if 'results' in data and len(data['results']) > 0:
-                    return data['results']
+                    return data['results'][:5]
             return None
     except Exception as e:
         st.error(f"Error searching for location: {e}")

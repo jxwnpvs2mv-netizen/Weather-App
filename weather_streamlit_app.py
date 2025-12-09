@@ -755,25 +755,35 @@ def display_weather(location, weather_data, model_key='default'):
         with st.expander("🔍 Debug: Precipitation Forecast (next 12 hours)", expanded=False):
             hourly = weather_data['hourly']
             if 'precipitation_probability' in hourly:
-                # Find current hour index using UTC time comparison
+                # Find current hour index using timezone-aware comparison
                 all_times = hourly.get('time', [])
                 start_idx = 0
                 
                 if all_times:
                     try:
-                        # Get current UTC time
-                        now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+                        # Get the timezone from the API response
+                        api_timezone = weather_data.get('timezone', 'UTC')
                         
-                        for i, time_str in enumerate(all_times):
-                            # Parse the time string from API
-                            dt = datetime.fromisoformat(time_str)
-                            # Make timezone-aware if not already
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
+                        try:
+                            from zoneinfo import ZoneInfo
+                            tz = ZoneInfo(api_timezone)
+                            now_local = datetime.now(tz).replace(minute=0, second=0, microsecond=0)
                             
-                            if dt >= now_utc:
-                                start_idx = i
-                                break
+                            for i, time_str in enumerate(all_times):
+                                dt_naive = datetime.fromisoformat(time_str)
+                                dt_aware = dt_naive.replace(tzinfo=tz)
+                                
+                                if dt_aware >= now_local:
+                                    start_idx = i
+                                    break
+                                    
+                        except ImportError:
+                            # Fallback without zoneinfo
+                            for i, time_str in enumerate(all_times):
+                                dt_naive = datetime.fromisoformat(time_str)
+                                if i == 0 or dt_naive.hour >= datetime.now().hour:
+                                    start_idx = i
+                                    break
                     except:
                         start_idx = 0
                 
@@ -871,28 +881,49 @@ def display_weather(location, weather_data, model_key='default'):
         all_precip_probs = hourly.get('precipitation_probability', [])
         
         
-        # Find current hour index by comparing against UTC time
-        # The API returns times in ISO format with timezone info
+        # Find current hour index
+        # The API with timezone='auto' returns times in the location's local timezone
+        # We need to use the timezone info from the API response to find "now"
         start_idx = 0
         if all_times:
             try:
-                # Get current UTC time
-                now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+                # Get the timezone from the API response
+                api_timezone = weather_data.get('timezone', 'UTC')
                 
-                # Find the current or next hour in the hourly data
-                for i, time_str in enumerate(all_times):
-                    # Parse the time string from API (handles timezone automatically)
-                    dt = datetime.fromisoformat(time_str)
-                    # Make timezone-aware if not already
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                # Try to use zoneinfo (Python 3.9+) or fall back to simpler comparison
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo(api_timezone)
+                    now_local = datetime.now(tz).replace(minute=0, second=0, microsecond=0)
                     
-                    # Check if this time is current or future
-                    if dt >= now_utc:
-                        start_idx = i
-                        break
+                    # Find the first hour that is >= now in the local timezone
+                    for i, time_str in enumerate(all_times):
+                        # Parse as naive datetime (it's already in local TZ from API)
+                        dt_naive = datetime.fromisoformat(time_str)
+                        # Make it aware in the location's timezone
+                        dt_aware = dt_naive.replace(tzinfo=tz)
+                        
+                        if dt_aware >= now_local:
+                            start_idx = i
+                            break
+                            
+                except ImportError:
+                    # Fallback for systems without zoneinfo: use simple string comparison
+                    # Since all times are in the same timezone, we can compare ISO strings
+                    # Get current UTC time and convert offset if timezone is known
+                    now_utc = datetime.now(timezone.utc)
+                    
+                    # Parse each time and compare
+                    for i, time_str in enumerate(all_times):
+                        dt_naive = datetime.fromisoformat(time_str)
+                        # Rough comparison: if the date/hour looks current or future, use it
+                        # This works because the API returns consecutive hours
+                        if i == 0 or dt_naive.hour >= datetime.now().hour:
+                            start_idx = i
+                            break
+                            
             except Exception as e:
-                # Fallback to first hour if parsing fails
+                # Ultimate fallback: start from index 0
                 start_idx = 0
         
         # Get 24 hours starting from current hour

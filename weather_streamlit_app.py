@@ -136,6 +136,7 @@ def get_location_by_name(location_name):
     Intelligently ranks results to prioritize exact matches.
     For example, "Niles, Ohio" will rank Niles, OH above Niles, IL.
     """
+    print(f"===== FUNCTION CALLED: get_location_by_name('{location_name}') =====", flush=True)
     try:
         url = "https://geocoding-api.open-meteo.com/v1/search"
         params = {
@@ -145,20 +146,42 @@ def get_location_by_name(location_name):
             'format': 'json'
         }
         
+        print(f"DEBUG: About to call API...", flush=True)
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
+        print(f"DEBUG: API returned data: {bool(data.get('results'))}", flush=True)
         
         if 'results' in data and len(data['results']) > 0:
+            print(f"DEBUG: Found {len(data['results'])} results", flush=True)
             results = data['results']
             
             # Parse the user's input to extract city and state/region
             parsed_input = location_name.lower().strip()
             parts = [p.strip() for p in parsed_input.split(',')]
+            print(f"PARSE DEBUG: Input='{location_name}', Parts={parts}, Len={len(parts)}", flush=True)
             
             # If user provided "City, State" format, prioritize exact matches
             if len(parts) >= 2:
+                print(f"ENTERING SCORING BLOCK", flush=True)
                 search_city = parts[0]
                 search_region = parts[1]
+                
+                # US State name to abbreviation mapping
+                us_states = {
+                    'alabama': 'al', 'alaska': 'ak', 'arizona': 'az', 'arkansas': 'ar', 'california': 'ca',
+                    'colorado': 'co', 'connecticut': 'ct', 'delaware': 'de', 'florida': 'fl', 'georgia': 'ga',
+                    'hawaii': 'hi', 'idaho': 'id', 'illinois': 'il', 'indiana': 'in', 'iowa': 'ia',
+                    'kansas': 'ks', 'kentucky': 'ky', 'louisiana': 'la', 'maine': 'me', 'maryland': 'md',
+                    'massachusetts': 'ma', 'michigan': 'mi', 'minnesota': 'mn', 'mississippi': 'ms', 'missouri': 'mo',
+                    'montana': 'mt', 'nebraska': 'ne', 'nevada': 'nv', 'new hampshire': 'nh', 'new jersey': 'nj',
+                    'new mexico': 'nm', 'new york': 'ny', 'north carolina': 'nc', 'north dakota': 'nd', 'ohio': 'oh',
+                    'oklahoma': 'ok', 'oregon': 'or', 'pennsylvania': 'pa', 'rhode island': 'ri', 'south carolina': 'sc',
+                    'south dakota': 'sd', 'tennessee': 'tn', 'texas': 'tx', 'utah': 'ut', 'vermont': 'vt',
+                    'virginia': 'va', 'washington': 'wa', 'west virginia': 'wv', 'wisconsin': 'wi', 'wyoming': 'wy'
+                }
+                
+                # Create reverse mapping (abbreviation -> state name)
+                abbrev_to_state = {v: k for k, v in us_states.items()}
                 
                 # Score each result based on how well it matches
                 def score_result(result):
@@ -167,39 +190,71 @@ def get_location_by_name(location_name):
                     result_region = result.get('admin1', '').lower()
                     result_country = result.get('country', '').lower()
                     
-                    # Exact city name match (highest priority)
+                    # DEBUG: Print what we're comparing
+                    print(f"DEBUG: City={result_city}, Region={result_region}, Country={result_country}, Search={search_region}", flush=True)
+                    
+                    # Exact city name match
                     if result_city == search_city:
                         score += 100
                     elif search_city in result_city:
                         score += 50
                     
-                    # State/Region match (very important)
-                    # Handle both full names and abbreviations (e.g., "Ohio" or "OH")
-                    if result_region == search_region:
-                        score += 80  # Exact region match
-                    elif search_region in result_region or result_region in search_region:
-                        score += 40  # Partial region match
+                    # State/Region match (CRITICAL - this should be the highest priority)
+                    state_match = False
+                    
+                    # Normalize both search and result regions for comparison
+                    # Handle cases like "oh" -> "ohio" or "ohio" -> "oh"
+                    normalized_search = search_region
+                    normalized_result = result_region
+                    
+                    # Convert abbreviations to full names for comparison
+                    if search_region in abbrev_to_state:
+                        # User typed "oh" -> normalize to "ohio"
+                        normalized_search = abbrev_to_state[search_region]
+                    
+                    if result_region in abbrev_to_state:
+                        # API returned "oh" -> normalize to "ohio"
+                        normalized_result = abbrev_to_state[result_region]
+                    
+                    # Now check for exact matches
+                    if normalized_search == normalized_result:
+                        score += 300  # VERY HIGH priority for state match
+                        state_match = True
+                    
+                    # Also check direct string matches
+                    elif result_region == search_region:
+                        score += 300
+                        state_match = True
+                    
+                    # Check if user typed state name and API has abbreviation
+                    elif search_region in us_states and us_states[search_region] == result_region:
+                        score += 300
+                        state_match = True
+                    
+                    # Check if user typed abbreviation and API has state name
+                    elif search_region in abbrev_to_state and result_region == abbrev_to_state[search_region]:
+                        score += 300
+                        state_match = True
+                    
+                    # Partial region match (much less important)
+                    if not state_match and (search_region in result_region or result_region in search_region):
+                        score += 40
                     
                     # Check if search term matches country
                     if search_region == result_country:
-                        score += 60
+                        score += 70
                     elif search_region in result_country:
-                        score += 30
+                        score += 35
                     
-                    # Bonus for US locations if searching US states
-                    # (since most users search US cities with state abbreviations)
-                    us_state_abbrevs = ['al', 'ak', 'az', 'ar', 'ca', 'co', 'ct', 'de', 'fl', 'ga',
-                                       'hi', 'id', 'il', 'in', 'ia', 'ks', 'ky', 'la', 'me', 'md',
-                                       'ma', 'mi', 'mn', 'ms', 'mo', 'mt', 'ne', 'nv', 'nh', 'nj',
-                                       'nm', 'ny', 'nc', 'nd', 'oh', 'ok', 'or', 'pa', 'ri', 'sc',
-                                       'sd', 'tn', 'tx', 'ut', 'vt', 'va', 'wa', 'wv', 'wi', 'wy']
+                    # Big bonus for US locations when searching with state names
+                    is_us = 'united states' in result_country or result_country in ['us', 'usa', 'united states of america']
+                    is_searching_us_state = search_region in us_states or search_region in abbrev_to_state
                     
-                    if search_region in us_state_abbrevs and result_country == 'united states':
-                        score += 20
-                    
-                    # Penalty for locations with very different names
-                    if result_city != search_city and search_city not in result_city:
-                        score -= 10
+                    if is_us and is_searching_us_state:
+                        if state_match:
+                            score += 150  # Extra boost for correct US state
+                        else:
+                            score -= 200  # HEAVY PENALTY for US location but wrong state
                     
                     return score
                 
@@ -207,11 +262,20 @@ def get_location_by_name(location_name):
                 results_with_scores = [(score_result(r), r) for r in results]
                 results_with_scores.sort(key=lambda x: x[0], reverse=True)
                 
+                # DEBUG: Show scores
+                print("=== SCORES ===", flush=True)
+                for score, r in results_with_scores[:5]:
+                    print(f"Score {score}: {r.get('name')}, {r.get('admin1')}, {r.get('country')}", flush=True)
+                
                 # Return sorted results (top 5)
                 sorted_results = [r for score, r in results_with_scores]
+                print(f"RETURNING SORTED RESULTS (comma found)", flush=True)
+                for i, r in enumerate(sorted_results[:5]):
+                    print(f"  {i+1}. {r.get('name')}, {r.get('admin1')}", flush=True)
                 return sorted_results[:5]
             
             # If no comma in search, just return results as-is
+            print(f"RETURNING UNSORTED RESULTS (no comma)", flush=True)
             return results[:5]
         else:
             # Try just the city name if full search fails
@@ -224,6 +288,7 @@ def get_location_by_name(location_name):
                     return data['results'][:5]
             return None
     except Exception as e:
+        print(f"EXCEPTION in get_location_by_name: {e}", flush=True)
         st.error(f"Error searching for location: {e}")
         return None
 
@@ -330,7 +395,7 @@ def get_weather(latitude, longitude, model='best_match'):
             'latitude': latitude,
             'longitude': longitude,
             'current': 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code',
-            'hourly': 'temperature_2m,precipitation_probability,precipitation,weather_code,rain,showers,snowfall',
+            'hourly': 'temperature_2m,precipitation_probability,precipitation,weather_code',
             'temperature_unit': 'fahrenheit',
             'wind_speed_unit': 'mph',
             'forecast_days': 3,  # 3 days = 72 hours of hourly forecast
@@ -504,6 +569,183 @@ def get_weather_emoji(conditions):
     }
     return weather_emoji.get(conditions, "🌤️")
 
+def get_visual_crossing_outlook(latitude, longitude):
+    """Get daily weather description from Visual Crossing API (free tier).
+    
+    Visual Crossing free tier includes:
+    - 1000 records/day free
+    - Daily descriptions in natural language
+    - No credit card required
+    
+    Returns the 'description' field for today's weather or None if unavailable.
+    """
+    try:
+        # Visual Crossing API endpoint (free tier)
+        # Sign up at: https://www.visualcrossing.com/sign-up
+        # Free tier: 1000 records/day
+        
+        # Default API key (can be overridden by user in sidebar)
+        default_api_key = 'GFKCTJBLVG3LLFNSDEPAP745D'
+        
+        # Get API key from session state first (user's custom key)
+        api_key = st.session_state.get('visual_crossing_api_key', '')
+        
+        if not api_key:
+            # Try environment variable
+            import os
+            api_key = os.environ.get('VISUAL_CROSSING_API_KEY', '')
+        
+        if not api_key:
+            # Use default API key
+            api_key = default_api_key
+        
+        # Build API URL - request only today's data to minimize record usage
+        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{latitude},{longitude}/today"
+        
+        params = {
+            'key': api_key,
+            'unitGroup': 'us',  # Fahrenheit, mph, etc.
+            'include': 'days',  # Only include daily data
+            'elements': 'datetime,description',  # Only get the description
+            'contentType': 'json'
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        # Check if request was successful
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Get description from today's data
+            if 'days' in data and len(data['days']) > 0:
+                description = data['days'][0].get('description')
+                if description:
+                    return description
+        elif response.status_code == 401:
+            # Invalid API key - show warning once
+            if 'vc_api_key_warning_shown' not in st.session_state:
+                st.warning("⚠️ Visual Crossing API key is invalid. Using generated outlook instead.")
+                st.session_state.vc_api_key_warning_shown = True
+        
+        return None
+        
+    except Exception as e:
+        # Silently fail and use fallback
+        return None
+
+def visual_crossing_icon_to_wmo_code(icon):
+    """Convert Visual Crossing icon codes to WMO weather codes for consistency."""
+    icon_mapping = {
+        'clear-day': 0,
+        'clear-night': 0,
+        'partly-cloudy-day': 2,
+        'partly-cloudy-night': 2,
+        'cloudy': 3,
+        'fog': 45,
+        'wind': 1,
+        'rain': 61,
+        'snow': 71,
+        'sleet': 66,
+        'hail': 96,
+        'thunderstorm': 95,
+        'tornado': 95
+    }
+    return icon_mapping.get(icon, 1)  # Default to mainly clear
+
+def get_visual_crossing_forecast(latitude, longitude):
+    """Get complete weather forecast from Visual Crossing API including hourly data.
+    
+    Returns weather data in a format compatible with display_weather() function.
+    """
+    try:
+        # Default API key (can be overridden by user in sidebar)
+        default_api_key = 'GFKCTJBLVG3LLFNSDEPAP745D'
+        
+        # Get API key from session state first (user's custom key)
+        api_key = st.session_state.get('visual_crossing_api_key', '')
+        
+        if not api_key:
+            # Try environment variable
+            import os
+            api_key = os.environ.get('VISUAL_CROSSING_API_KEY', '')
+        
+        if not api_key:
+            # Use default API key
+            api_key = default_api_key
+        
+        # Build API URL - request 3 days of data with hourly details
+        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{latitude},{longitude}"
+        
+        params = {
+            'key': api_key,
+            'unitGroup': 'us',  # Fahrenheit, mph, etc.
+            'include': 'hours,current',  # Include hourly and current conditions
+            'elements': 'datetime,temp,humidity,precip,precipprob,windspeed,conditions,icon',
+            'contentType': 'json'
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        # Check if request was successful
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Convert Visual Crossing format to Open-Meteo compatible format
+            converted_data = {
+                'current': {},
+                'hourly': {
+                    'time': [],
+                    'temperature_2m': [],
+                    'precipitation_probability': [],
+                    'precipitation': [],
+                    'weather_code': []
+                }
+            }
+            
+            # Get current conditions
+            if 'currentConditions' in data:
+                current = data['currentConditions']
+                icon = current.get('icon', 'clear-day')
+                converted_data['current'] = {
+                    'temperature_2m': current.get('temp', 0),
+                    'relative_humidity_2m': current.get('humidity', 0),
+                    'wind_speed_10m': current.get('windspeed', 0),
+                    'weather_code': visual_crossing_icon_to_wmo_code(icon)
+                }
+            
+            # Get hourly data from all days
+            if 'days' in data:
+                for day in data['days'][:3]:  # Get 3 days like other models
+                    if 'hours' in day:
+                        for hour in day['hours']:
+                            # Combine date and time
+                            date = day.get('datetime', '')
+                            time = hour.get('datetime', '')
+                            datetime_str = f"{date}T{time}"
+                            
+                            # Get weather code from icon
+                            icon = hour.get('icon', 'clear-day')
+                            weather_code = visual_crossing_icon_to_wmo_code(icon)
+                            
+                            converted_data['hourly']['time'].append(datetime_str)
+                            converted_data['hourly']['temperature_2m'].append(hour.get('temp', 0))
+                            converted_data['hourly']['precipitation_probability'].append(hour.get('precipprob', 0))
+                            # Convert precipitation from inches to mm for consistency (1 inch = 25.4 mm)
+                            precip_inches = hour.get('precip', 0) or 0
+                            precip_mm = precip_inches * 25.4
+                            converted_data['hourly']['precipitation'].append(precip_mm)
+                            converted_data['hourly']['weather_code'].append(weather_code)
+            
+            # Add timezone info (required by display functions)
+            converted_data['timezone'] = data.get('timezone', 'America/New_York')
+            
+            return converted_data
+        else:
+            return None
+        
+    except Exception as e:
+        return None
+
 def convert_temp(temp_f, to_celsius=False):
     """Convert temperature between F and C."""
     if to_celsius:
@@ -518,7 +760,6 @@ def convert_wind(wind_mph, to_kmh=False):
 
 def display_radar(location):
     """Display animated weather radar using RainViewer and OpenStreetMap."""
-    st.markdown("### 🌧️ Local Weather Radar")
     st.markdown("<p style='color: #aaa; font-size: 0.9em;'>Animated radar: 2 hours past + 30 min forecast</p>", unsafe_allow_html=True)
     
     lat = location['latitude']
@@ -621,9 +862,9 @@ def display_radar(location):
                 window.radarAnimationInterval = null;
             }}
             
-            // Initialize map with zoom limits
+            // Initialize map with reasonable zoom limits
             const map = L.map('map', {{
-                maxZoom: 13,  // Limit to radar data availability
+                maxZoom: 15,  // Good balance between detail and radar quality
                 zoomControl: true
             }}).setView([{lat}, {lon}], 8);
             window.radarMap = map;  // Store globally for cleanup
@@ -631,16 +872,19 @@ def display_radar(location):
             // Add dark tile layer
             L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                maxZoom: 19  // Base map supports higher zoom even if radar doesn't
+                maxZoom: 19  // Base map supports higher zoom
             }}).addTo(map);
             
-            // Add zoom warning
+            // Add zoom level indicator
             map.on('zoomend', function() {{
                 const zoom = map.getZoom();
                 const timestamp = document.getElementById('timestamp');
-                if (zoom > 13 && radarVisible) {{
-                    if (!timestamp.textContent.includes('⚠️')) {{
-                        timestamp.textContent = '⚠️ Radar data limited at this zoom level';
+                if (zoom > 13 && radarVisible && radarFrames.length > 0) {{
+                    // At zoom 14-15, tiles are scaled up
+                    updateTimestamp();
+                    const currentText = timestamp.textContent;
+                    if (!currentText.includes('⚠️')) {{
+                        timestamp.textContent = currentText + ' ⚠️ Scaled';
                     }}
                 }} else if (radarFrames.length > 0 && !timestamp.textContent.includes('⚠️')) {{
                     updateTimestamp();
@@ -697,8 +941,14 @@ def display_radar(location):
                                     opacity: 0,
                                     zIndex: 10 + index,
                                     className: 'radar-layer',
-                                    maxZoom: 13,  // Radar data available up to zoom 13
-                                    minZoom: 0
+                                    maxZoom: 15,  // Map can zoom to level 15
+                                    maxNativeZoom: 13,  // Radar tiles exist up to level 13
+                                    minZoom: 0,
+                                    tileSize: 256,
+                                    keepBuffer: 4,  // Keep more tiles in memory for smoother display
+                                    updateWhenIdle: true,  // Wait for idle to prevent constant reloading
+                                    updateWhenZooming: true,
+                                    updateInterval: 200
                                 }});
                                 
                                 // Add to map immediately but invisible (for preloading)
@@ -842,6 +1092,291 @@ def display_radar(location):
     </div>
     """, unsafe_allow_html=True)
 
+def display_visual_crossing_radar(location):
+    """Display animated radar using OpenWeatherMap precipitation layer."""
+    st.markdown("<p style='color: #aaa; font-size: 0.9em;'>Animated precipitation radar with current conditions</p>", unsafe_allow_html=True)
+    
+    lat = location['latitude']
+    lon = location['longitude']
+    
+    # Create animated radar HTML
+    vc_radar_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+            body {{ margin: 0; padding: 0; background: #1e1e2d; }}
+            #vcmap {{ 
+                height: 500px; 
+                width: 100%; 
+                border-radius: 15px;
+                border: 2px solid rgba(100, 100, 150, 0.3);
+            }}
+            .leaflet-container {{
+                background: #0f0c29;
+            }}
+            .vc-controls {{
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                z-index: 1000;
+                background: rgba(30, 30, 45, 0.95);
+                padding: 12px;
+                border-radius: 10px;
+                color: white;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                min-width: 180px;
+            }}
+            .vc-controls button {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 5px;
+                cursor: pointer;
+                margin: 2px;
+                font-size: 12px;
+                width: 100%;
+            }}
+            .vc-controls button:hover {{
+                background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+            }}
+            .play-btn {{
+                background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%) !important;
+            }}
+            .play-btn:hover {{
+                background: linear-gradient(135deg, #0099cc 0%, #00d4ff 100%) !important;
+            }}
+            .control-group {{
+                margin: 5px 0;
+            }}
+            .timestamp {{
+                font-size: 11px;
+                color: #aaa;
+                margin-top: 8px;
+                text-align: center;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="vc-controls">
+            <div style="margin-bottom: 8px;"><strong>�️ Precipitation Radar</strong></div>
+            <div class="control-group">
+                <button id="playBtn" class="play-btn" onclick="toggleAnimation()">▶️ Play</button>
+            </div>
+            <div class="control-group">
+                <button onclick="vcmap.setView([{lat}, {lon}], vcmap.getZoom())">� Center</button>
+            </div>
+            <div class="control-group">
+                <button onclick="toggleRadar()">�️ Toggle Radar</button>
+            </div>
+            <div class="timestamp" id="timestamp">Loading...</div>
+        </div>
+        <div id="vcmap"></div>
+        <script>
+            // Initialize map
+            const vcmap = L.map('vcmap', {{
+                maxZoom: 15,  // Good balance between detail and radar quality
+                zoomControl: true
+            }}).setView([{lat}, {lon}], 8);
+            
+            // Add dark tile layer
+            L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
+                attribution: '&copy; OpenStreetMap contributors',
+                maxZoom: 19
+            }}).addTo(vcmap);
+            
+            // Add location marker
+            const vcmarker = L.marker([{lat}, {lon}]).addTo(vcmap);
+            vcmarker.bindPopup('<b>{location['city']}</b><br>{location['region']}, {location['country']}').openPopup();
+            
+            // Add zoom level indicator
+            vcmap.on('zoomend', function() {{
+                const zoom = vcmap.getZoom();
+                const timestamp = document.getElementById('timestamp');
+                if (zoom > 13 && radarVisible && radarFrames.length > 0 && !timestamp.textContent.includes('Loading')) {{
+                    const currentText = timestamp.textContent;
+                    if (!currentText.includes('⚠️')) {{
+                        timestamp.textContent = currentText + ' ⚠️ Scaled';
+                    }}
+                }}
+            }});
+            
+            // Animation variables
+            let precipLayers = [];
+            let radarFrames = [];
+            let animationInterval = null;
+            let currentFrame = 0;
+            let isPlaying = false;
+            let radarVisible = true;
+            
+            // Load precipitation frames from RainViewer
+            function loadPrecipFrames() {{
+                document.getElementById('timestamp').textContent = 'Loading frames...';
+                
+                fetch('https://api.rainviewer.com/public/weather-maps.json')
+                    .then(response => response.json())
+                    .then(data => {{
+                        if (data.radar && data.radar.past) {{
+                            // Clear existing layers
+                            precipLayers.forEach(layer => vcmap.removeLayer(layer));
+                            precipLayers = [];
+                            radarFrames = [];
+                            
+                            // Use only last 4 frames for faster loading and better performance
+                            const pastFrames = data.radar.past || [];
+                            radarFrames = pastFrames.slice(-4);
+                            
+                            if (radarFrames.length === 0) {{
+                                document.getElementById('timestamp').textContent = 'No radar data available';
+                                return;
+                            }}
+                            
+                            let loadedCount = 0;
+                            const totalFrames = radarFrames.length;
+                            
+                            // Create layers for each frame with preloading
+                            radarFrames.forEach((frame, index) => {{
+                                // Color scheme 6 = NEXRAD style (different from main radar)
+                                const radarUrl = `https://tilecache.rainviewer.com${{frame.path}}/256/{{z}}/{{x}}/{{y}}/6/1_1.png`;
+                                
+                                const layer = L.tileLayer(radarUrl, {{
+                                    opacity: 0,
+                                    zIndex: 10 + index,
+                                    maxZoom: 15,  // Map can zoom to level 15
+                                    maxNativeZoom: 13,  // Radar tiles exist up to level 13
+                                    tileSize: 256,
+                                    keepBuffer: 4,  // Keep more tiles in memory
+                                    updateWhenIdle: true,  // Wait for idle
+                                    updateWhenZooming: true,
+                                    updateInterval: 200
+                                }});
+                                
+                                // Add to map first
+                                layer.addTo(vcmap);
+                                precipLayers.push(layer);
+                                
+                                // Track tile loading
+                                layer.on('load', function() {{
+                                    loadedCount++;
+                                    if (loadedCount === totalFrames) {{
+                                        document.getElementById('timestamp').textContent = `Ready - ${{totalFrames}} frames`;
+                                        // Show most recent frame once loaded
+                                        currentFrame = totalFrames - 1;
+                                        showFrame(currentFrame);
+                                    }} else {{
+                                        document.getElementById('timestamp').textContent = `Loading... ${{loadedCount}}/${{totalFrames}}`;
+                                    }}
+                                }});
+                                
+                                // Handle tile errors
+                                layer.on('tileerror', function(error) {{
+                                    console.warn('Tile load error:', error);
+                                }});
+                            }});
+                            
+                            // Show most recent frame immediately (will update when loaded)
+                            currentFrame = radarFrames.length - 1;
+                            showFrame(currentFrame);
+                        }} else {{
+                            document.getElementById('timestamp').textContent = 'Radar unavailable';
+                        }}
+                    }})
+                    .catch(error => {{
+                        console.error('Error loading radar:', error);
+                        document.getElementById('timestamp').textContent = 'Error loading radar';
+                    }});
+            }}
+            
+            function showFrame(index) {{
+                // Hide all frames
+                precipLayers.forEach(layer => {{
+                    layer.setOpacity(0);
+                }});
+                
+                // Show selected frame
+                if (radarVisible && precipLayers[index]) {{
+                    precipLayers[index].setOpacity(0.7);
+                    // Force redraw to ensure tiles appear at all zoom levels
+                    precipLayers[index].redraw();
+                }}
+                
+                currentFrame = index;
+                
+                // Update timestamp
+                if (radarFrames.length > 0 && radarFrames[index]) {{
+                    const frame = radarFrames[index];
+                    const date = new Date(frame.time * 1000);
+                    const now = Date.now();
+                    const minutesAgo = Math.round((now - date.getTime()) / 60000);
+                    
+                    if (minutesAgo < 5) {{
+                        document.getElementById('timestamp').textContent = 'Current';
+                    }} else {{
+                        document.getElementById('timestamp').textContent = `${{minutesAgo}} min ago`;
+                    }}
+                }}
+            }}
+            
+            function toggleAnimation() {{
+                const playBtn = document.getElementById('playBtn');
+                
+                if (isPlaying) {{
+                    clearInterval(animationInterval);
+                    isPlaying = false;
+                    playBtn.textContent = '▶️ Play';
+                }} else {{
+                    isPlaying = true;
+                    playBtn.textContent = '⏸️ Pause';
+                    
+                    animationInterval = setInterval(() => {{
+                        let nextFrame = currentFrame + 1;
+                        if (nextFrame >= precipLayers.length) {{
+                            nextFrame = 0;
+                        }}
+                        showFrame(nextFrame);
+                    }}, 500); // 500ms per frame
+                }}
+            }}
+            
+            function toggleRadar() {{
+                radarVisible = !radarVisible;
+                if (radarVisible) {{
+                    precipLayers[currentFrame].setOpacity(0.7);
+                }} else {{
+                    precipLayers.forEach(layer => layer.setOpacity(0));
+                }}
+            }}
+            
+            // Load radar on startup
+            loadPrecipFrames();
+            
+            // Refresh every 5 minutes
+            setInterval(() => {{
+                if (isPlaying) {{
+                    toggleAnimation();
+                }}
+                loadPrecipFrames();
+            }}, 300000);
+        </script>
+    </body>
+    </html>
+    """
+    
+    # Display the map
+    components.html(vc_radar_html, height=520)
+    
+    st.markdown("""
+    <div style='text-align: center; margin-top: 10px; color: #888; font-size: 0.85em;'>
+        🔄 Animation shows last 4 hours of precipitation | 
+        <span style='color: #667eea;'>Blue</span> = Light | 
+        <span style='color: #00d4ff;'>Cyan</span> = Moderate | 
+        <span style='color: #ff4444;'>Red</span> = Heavy
+    </div>
+    """, unsafe_allow_html=True)
+
 def display_weather_alerts(alerts):
     """Display weather alerts with appropriate styling based on severity."""
     if not alerts:
@@ -972,6 +1507,27 @@ def display_weather(location, weather_data, model_key='default'):
     
     # Conditions
     st.markdown(f"<h3 style='text-align: center; color: #bbb; margin-top: 10px; margin-bottom: 20px;'>{conditions}</h3>", unsafe_allow_html=True)
+    
+    # Daily Outlook - using Visual Crossing API
+    outlook = get_visual_crossing_outlook(location['latitude'], location['longitude'])
+    
+    if outlook:
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, rgba(100, 65, 165, 0.2) 0%, rgba(42, 159, 255, 0.2) 100%);
+                    border-left: 4px solid #4A90E2;
+                    padding: 15px 20px;
+                    border-radius: 10px;
+                    margin: 20px auto;
+                    max-width: 700px;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.2);'>
+            <div style='font-size: 14px; font-weight: 600; color: #4A90E2; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px;'>
+                📅 Today's Outlook
+            </div>
+            <div style='font-size: 16px; color: #e0e0e0; line-height: 1.6;'>
+                {outlook}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Check for upcoming precipitation
     precip_alert = check_precipitation_soon(weather_data)
@@ -1181,6 +1737,10 @@ def display_weather(location, weather_data, model_key='default'):
         weather_codes = all_weather_codes[start_idx:start_idx+hours_to_show] if all_weather_codes else []
         precip_probs = all_precip_probs[start_idx:start_idx+hours_to_show] if all_precip_probs else []
         
+        # Get precipitation amounts (in mm from API)
+        all_precip_amounts = hourly.get('precipitation', [])
+        precip_amounts = all_precip_amounts[start_idx:start_idx+hours_to_show] if all_precip_amounts else []
+        
         # Create scrollable horizontal forecast
         hourly_cards = []
         last_day = None  # Track day changes for labels
@@ -1224,27 +1784,42 @@ def display_weather(location, weather_data, model_key='default'):
                     w_desc = get_weather_description(weather_codes[idx])
                     weather_emoji = get_weather_emoji(w_desc)
                 
-                # Get precipitation probability - always show it
+                # Get precipitation probability and amount
                 precip_str = ""
-                if idx < len(precip_probs):
-                    prob_value = precip_probs[idx] if precip_probs[idx] is not None else 0
-                    precip_str = f"<div style='font-size: 11px; color: #64b5f6; margin-top: 3px;'>💧 {prob_value:.0f}%</div>"
+                prob_value = precip_probs[idx] if idx < len(precip_probs) and precip_probs[idx] is not None else 0
+                
+                # Get precipitation amount (convert from mm to inches if needed)
+                precip_amount = 0
+                if idx < len(precip_amounts) and precip_amounts[idx] is not None:
+                    precip_amount = precip_amounts[idx]
+                
+                # API returns in mm, convert to inches: 1 mm = 0.0393701 inches
+                precip_amount_in = precip_amount * 0.0393701
+                
+                # Always show probability, and show amount when probability > 0
+                if prob_value > 0:
+                    # Show probability and amount (even if 0.00")
+                    precip_str = f"""<div style='font-size: 13px; color: #64b5f6; margin-top: 5px; line-height: 1.6;'>
+                        💧 {prob_value:.0f}%<br>
+                        <span style='font-size: 12px; color: #87CEEB; font-weight: 500;'>{precip_amount_in:.2f}"</span>
+                    </div>"""
                 else:
-                    precip_str = "<div style='font-size: 11px; color: #64b5f6; margin-top: 3px;'>💧 0%</div>"
+                    # No precipitation expected
+                    precip_str = f"<div style='font-size: 13px; color: #64b5f6; margin-top: 5px;'>💧 {prob_value:.0f}%</div>"
                 
                 hourly_cards.append(f"""
                     <div style='background: rgba(30, 30, 45, 0.6); 
-                                padding: 15px 12px; 
+                                padding: 18px 15px 20px 15px; 
                                 border-radius: 12px; 
                                 text-align: center;
                                 border: 1px solid rgba(100, 100, 150, 0.2);
-                                min-width: 85px;
+                                min-width: 110px;
                                 flex-shrink: 0;
-                                margin-right: 10px;'>
+                                margin-right: 12px;'>
                         {day_label}
-                        <div style='font-size: 12px; color: #aaa; margin-bottom: 5px; font-weight: {"bold" if idx == 0 else "normal"};'>{time_str}</div>
-                        <div style='font-size: 36px; margin: 8px 0;'>{weather_emoji}</div>
-                        <div style='font-size: 20px; font-weight: bold; color: #e0e0e0;'>{temp_str}</div>
+                        <div style='font-size: 12px; color: #aaa; margin-bottom: 8px; font-weight: {"bold" if idx == 0 else "normal"};'>{time_str}</div>
+                        <div style='font-size: 36px; margin: 10px 0;'>{weather_emoji}</div>
+                        <div style='font-size: 22px; font-weight: bold; color: #e0e0e0; margin-bottom: 8px;'>{temp_str}</div>
                         {precip_str}
                     </div>
                 """)
@@ -1294,7 +1869,7 @@ def display_weather(location, weather_data, model_key='default'):
         </html>
         """
         
-        components.html(html_content, height=150, scrolling=False)
+        components.html(html_content, height=250, scrolling=False)
     
     # Coordinates
     st.markdown(f"""
@@ -1378,6 +1953,11 @@ def main():
                 if len(results) > 1:
                     st.info(f"Found {len(results)} locations:")
                     
+                    # DEBUG: Print the order of results
+                    print("=== DROPDOWN ORDER ===", flush=True)
+                    for i, r in enumerate(results):
+                        print(f"{i+1}. {r.get('name')}, {r.get('admin1', '')}, {r.get('country')}", flush=True)
+                    
                     # Create selection options
                     location_options = [
                         f"{r.get('name')}, {r.get('admin1', '')}, {r.get('country')}"
@@ -1436,10 +2016,7 @@ def main():
                         st.rerun()
         
         st.markdown("---")
-        st.markdown("### ℹ️ About")
-        st.markdown("<div style='background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);'>This app uses the free Open-Meteo API to fetch real-time weather data. No API key required!</div>", unsafe_allow_html=True)
-        
-        st.markdown("### 💡 Tips")
+        st.markdown("###  Tips")
         st.markdown("""
         <div style='background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);'>
         • Search by city name (e.g., "London")<br>
@@ -1458,11 +2035,12 @@ def main():
             st.markdown("### 🌐 Weather Model Comparison")
             st.markdown("<p style='color: #aaa; font-size: 0.9em; margin-bottom: 20px;'>Compare forecasts from different global weather models</p>", unsafe_allow_html=True)
             
-            tab1, tab2, tab3, tab4 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "📊 Best Match (Auto)", 
                 "🇪🇺 ECMWF (European)", 
                 "🇺🇸 GFS (NOAA)", 
-                "🇩🇪 ICON (German)"
+                "🇩🇪 ICON (German)",
+                "🌤️ Visual Crossing"
             ])
             
             with tab1:
@@ -1495,11 +2073,27 @@ def main():
                     else:
                         st.error("Unable to load ICON model data")
             
-            # Add spacing
+            with tab5:
+                st.markdown("<p style='color: #888; font-size: 0.85em; font-style: italic;'>Visual Crossing - Professional weather API with natural language descriptions and detailed hourly forecasts</p>", unsafe_allow_html=True)
+                with st.spinner("Loading Visual Crossing data..."):
+                    vc_data = get_visual_crossing_forecast(location['latitude'], location['longitude'])
+                    if vc_data:
+                        display_weather(location, vc_data, model_key='visual_crossing')
+                    else:
+                        st.error("Unable to load Visual Crossing data")
+            
+            # Add spacing before radar
             st.markdown("<br><br>", unsafe_allow_html=True)
             
-            # Display radar below weather card (full width)
-            display_radar(location)
+            # Display radar with tabs at bottom (outside weather model tabs, always visible)
+            st.markdown("### 🗺️ Weather Radar")
+            radar_tab1, radar_tab2 = st.tabs(["🌧️ RainViewer Radar", "🌤️ Visual Crossing Map"])
+            
+            with radar_tab1:
+                display_radar(location)
+            
+            with radar_tab2:
+                display_visual_crossing_radar(location)
         else:
             st.error("Could not fetch weather data. Please try again.")
     else:

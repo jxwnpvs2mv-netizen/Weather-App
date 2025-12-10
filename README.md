@@ -2,16 +2,17 @@
 
 - 🌍 **Global Weather Data** - Search any location worldwide
 - 📍 **Auto-Location Detection** - Automatically detect your current location
+- 📅 **Daily Weather Outlook** - Professional natural language weather descriptions (powered by Visual Crossing)
 - 🌧️ **Animated Weather Radar** - Real-time precipitation radar with past & future forecasts
 - 🚨 **Weather Alerts & Warnings** - Real-time severe weather alerts from National Weather Service (US)
 - 🌐 **Multiple Weather Models** - Compare ECMWF, GFS, and ICON forecasts
-- 📊 **24-Hour Forecast** - Scrollable hourly forecast with precipitation probabilities
+- 📊 **72-Hour Forecast** - Extended hourly forecast with precipitation amounts and probabilities
 - ⚡ **Precipitation Alerts** - Get notified of upcoming rain, snow, or storms
 - 🌡️ **Unit Conversion** - Toggle between °F/°C and mph/km/h
 - 🎨 **Beautiful Dark Mode UI** - Modern gradient design with smooth animations
 - 🔄 **Real-time Updates** - Get the latest weather data instantly
 - 📱 **Responsive Design** - Works perfectly on desktop and mobile
-- 🆓 **No API Key Required** - Uses free Open-Meteo API
+- 🆓 **Ready to Use** - Configured with API keys, works immediately
 A beautiful, real-time weather application built with Streamlit that provides current weather information for any location worldwide.
 
 ![Weather App](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=Streamlit&logoColor=white)

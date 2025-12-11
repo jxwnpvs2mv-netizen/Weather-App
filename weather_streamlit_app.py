@@ -17,6 +17,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Constants: US states
+US_STATES = {
+    'alabama': 'al', 'alaska': 'ak', 'arizona': 'az', 'arkansas': 'ar', 'california': 'ca',
+    'colorado': 'co', 'connecticut': 'ct', 'delaware': 'de', 'florida': 'fl', 'georgia': 'ga',
+    'hawaii': 'hi', 'idaho': 'id', 'illinois': 'il', 'indiana': 'in', 'iowa': 'ia',
+    'kansas': 'ks', 'kentucky': 'ky', 'louisiana': 'la', 'maine': 'me', 'maryland': 'md',
+    'massachusetts': 'ma', 'michigan': 'mi', 'minnesota': 'mn', 'mississippi': 'ms', 'missouri': 'mo',
+    'montana': 'mt', 'nebraska': 'ne', 'nevada': 'nv', 'new hampshire': 'nh', 'new jersey': 'nj',
+    'new mexico': 'nm', 'new york': 'ny', 'north carolina': 'nc', 'north dakota': 'nd', 'ohio': 'oh',
+    'oklahoma': 'ok', 'oregon': 'or', 'pennsylvania': 'pa', 'rhode island': 'ri', 'south carolina': 'sc',
+    'south dakota': 'sd', 'tennessee': 'tn', 'texas': 'tx', 'utah': 'ut', 'vermont': 'vt',
+    'virginia': 'va', 'washington': 'wa', 'west virginia': 'wv', 'wisconsin': 'wi', 'wyoming': 'wy'
+}
+ABBREV_TO_STATE = {v: k for k, v in US_STATES.items()}
+
 # Custom CSS - Dark Mode
 st.markdown("""
 <style>
@@ -141,7 +156,7 @@ def get_location_by_name(location_name):
         url = "https://geocoding-api.open-meteo.com/v1/search"
         params = {
             'name': location_name,
-            'count': 10,  # Get more results to sort through
+            'count': 50,  # Request more results to improve matching
             'language': 'en',
             'format': 'json'
         }
@@ -160,14 +175,12 @@ def get_location_by_name(location_name):
             parts = [p.strip() for p in parsed_input.split(',')]
             print(f"PARSE DEBUG: Input='{location_name}', Parts={parts}, Len={len(parts)}", flush=True)
             
-            # If user provided "City, State" format, prioritize exact matches
-            if len(parts) >= 2:
-                print(f"ENTERING SCORING BLOCK", flush=True)
-                search_city = parts[0]
-                search_region = parts[1]
-                
-                # US State name to abbreviation mapping
-                us_states = {
+            # Determine desired city/state from input (supports abbreviations)
+            search_city = parts[0] if len(parts) >= 1 else parsed_input
+            search_region = parts[1] if len(parts) >= 2 else ''
+
+            # US State name to abbreviation mapping
+            us_states = {
                     'alabama': 'al', 'alaska': 'ak', 'arizona': 'az', 'arkansas': 'ar', 'california': 'ca',
                     'colorado': 'co', 'connecticut': 'ct', 'delaware': 'de', 'florida': 'fl', 'georgia': 'ga',
                     'hawaii': 'hi', 'idaho': 'id', 'illinois': 'il', 'indiana': 'in', 'iowa': 'ia',
@@ -179,12 +192,12 @@ def get_location_by_name(location_name):
                     'south dakota': 'sd', 'tennessee': 'tn', 'texas': 'tx', 'utah': 'ut', 'vermont': 'vt',
                     'virginia': 'va', 'washington': 'wa', 'west virginia': 'wv', 'wisconsin': 'wi', 'wyoming': 'wy'
                 }
-                
-                # Create reverse mapping (abbreviation -> state name)
-                abbrev_to_state = {v: k for k, v in us_states.items()}
-                
-                # Score each result based on how well it matches
-                def score_result(result):
+            
+            # Create reverse mapping (abbreviation -> state name)
+            abbrev_to_state = {v: k for k, v in us_states.items()}
+            
+            # Score each result based on how well it matches
+            def score_result(result):
                     score = 0
                     result_city = result.get('name', '').lower()
                     result_region = result.get('admin1', '').lower()
@@ -199,45 +212,26 @@ def get_location_by_name(location_name):
                     elif search_city in result_city:
                         score += 50
                     
-                    # State/Region match (CRITICAL - this should be the highest priority)
+                    # State/Region match (CRITICAL) - normalize desired state first
                     state_match = False
-                    
-                    # Normalize both search and result regions for comparison
-                    # Handle cases like "oh" -> "ohio" or "ohio" -> "oh"
-                    normalized_search = search_region
+                    desired_state = search_region
+                    if desired_state in abbrev_to_state:
+                        desired_state = abbrev_to_state[desired_state]
                     normalized_result = result_region
+                    if normalized_result in abbrev_to_state:
+                        normalized_result = abbrev_to_state[normalized_result]
+                    if desired_state and normalized_result:
+                        if desired_state == normalized_result:
+                            score += 400  # even stronger priority
+                            state_match = True
+                        else:
+                            # penalize wrong US state when user specified a US state
+                            is_us = 'united states' in result_country or result_country in ['us', 'usa', 'united states of america']
+                            if is_us:
+                                score -= 150
                     
-                    # Convert abbreviations to full names for comparison
-                    if search_region in abbrev_to_state:
-                        # User typed "oh" -> normalize to "ohio"
-                        normalized_search = abbrev_to_state[search_region]
-                    
-                    if result_region in abbrev_to_state:
-                        # API returned "oh" -> normalize to "ohio"
-                        normalized_result = abbrev_to_state[result_region]
-                    
-                    # Now check for exact matches
-                    if normalized_search == normalized_result:
-                        score += 300  # VERY HIGH priority for state match
-                        state_match = True
-                    
-                    # Also check direct string matches
-                    elif result_region == search_region:
-                        score += 300
-                        state_match = True
-                    
-                    # Check if user typed state name and API has abbreviation
-                    elif search_region in us_states and us_states[search_region] == result_region:
-                        score += 300
-                        state_match = True
-                    
-                    # Check if user typed abbreviation and API has state name
-                    elif search_region in abbrev_to_state and result_region == abbrev_to_state[search_region]:
-                        score += 300
-                        state_match = True
-                    
-                    # Partial region match (much less important)
-                    if not state_match and (search_region in result_region or result_region in search_region):
+                    # Partial region match (fallback)
+                    if not state_match and desired_state and (desired_state in result_region or result_region in desired_state):
                         score += 40
                     
                     # Check if search term matches country
@@ -246,46 +240,53 @@ def get_location_by_name(location_name):
                     elif search_region in result_country:
                         score += 35
                     
-                    # Big bonus for US locations when searching with state names
+                    # Country preference
                     is_us = 'united states' in result_country or result_country in ['us', 'usa', 'united states of america']
-                    is_searching_us_state = search_region in us_states or search_region in abbrev_to_state
-                    
-                    if is_us and is_searching_us_state:
-                        if state_match:
-                            score += 150  # Extra boost for correct US state
-                        else:
-                            score -= 200  # HEAVY PENALTY for US location but wrong state
+                    if is_us:
+                        score += 50
                     
                     return score
                 
-                # Sort results by score (highest first)
-                results_with_scores = [(score_result(r), r) for r in results]
-                results_with_scores.sort(key=lambda x: x[0], reverse=True)
-                
-                # DEBUG: Show scores
-                print("=== SCORES ===", flush=True)
-                for score, r in results_with_scores[:5]:
-                    print(f"Score {score}: {r.get('name')}, {r.get('admin1')}, {r.get('country')}", flush=True)
-                
-                # Return sorted results (top 5)
-                sorted_results = [r for score, r in results_with_scores]
-                print(f"RETURNING SORTED RESULTS (comma found)", flush=True)
-                for i, r in enumerate(sorted_results[:5]):
-                    print(f"  {i+1}. {r.get('name')}, {r.get('admin1')}", flush=True)
-                return sorted_results[:5]
+            # Sort results by score (highest first) ALWAYS
+            results_with_scores = [(score_result(r), r) for r in results]
+            results_with_scores.sort(key=lambda x: x[0], reverse=True)
             
-            # If no comma in search, just return results as-is
-            print(f"RETURNING UNSORTED RESULTS (no comma)", flush=True)
-            return results[:5]
+            # (Debug removed) Return sorted results
+            # Return top 5 sorted results
+            sorted_results = [r for score, r in results_with_scores]
+            return sorted_results[:5]
         else:
-            # Try just the city name if full search fails
-            if ',' in location_name:
-                city_only = location_name.split(',')[0].strip()
+            # Fallbacks when API returns no data
+            parsed_input = location_name.lower().strip()
+            parts = [p.strip() for p in parsed_input.split(',')]
+            # If input was "City, State" try city-only with larger count and then filter admin1 by state
+            if len(parts) >= 2:
+                city_only = parts[0]
+                state_term = parts[1]
+                # Normalize state abbreviation
+                abbrev_to_state = ABBREV_TO_STATE
+                desired_state = state_term
+                if desired_state.lower() in abbrev_to_state:
+                    desired_state = abbrev_to_state[desired_state.lower()]
+                # Retry with city-only
                 params['name'] = city_only
+                params['count'] = 50
                 response = requests.get(url, params=params, timeout=10)
                 data = response.json()
                 if 'results' in data and len(data['results']) > 0:
+                    # Filter to US and desired state first
+                    filtered = []
+                    for r in data['results']:
+                        admin1 = (r.get('admin1') or '').lower()
+                        country = (r.get('country') or '').lower()
+                        norm_admin1 = abbrev_to_state.get(admin1, admin1)
+                        if desired_state and country.startswith('united') and norm_admin1 == desired_state.lower():
+                            filtered.append(r)
+                    if filtered:
+                        return filtered[:5]
+                    # Otherwise return top few city-only results
                     return data['results'][:5]
+            # Last resort: return None
             return None
     except Exception as e:
         print(f"EXCEPTION in get_location_by_name: {e}", flush=True)
@@ -1934,12 +1935,14 @@ def main():
             # Search button
             if st.button("Search", use_container_width=True):
                 if location_name:
+                    # Clear any stale results before new search
+                    st.session_state.search_results = None
+                    st.session_state.search_query = location_name
                     with st.spinner(f"Searching for {location_name}..."):
                         results = get_location_by_name(location_name)
                         
                         if results:
                             st.session_state.search_results = results
-                            st.session_state.search_query = location_name
                         else:
                             st.session_state.search_results = None
                             st.error(f"Location '{location_name}' not found. Try a different search.")
@@ -1947,16 +1950,11 @@ def main():
                     st.warning("Please enter a location name")
             
             # Display search results if available
-            if 'search_results' in st.session_state and st.session_state.search_results:
+            if 'search_results' in st.session_state and st.session_state.search_results and st.session_state.get('search_query'):
                 results = st.session_state.search_results
                 
                 if len(results) > 1:
                     st.info(f"Found {len(results)} locations:")
-                    
-                    # DEBUG: Print the order of results
-                    print("=== DROPDOWN ORDER ===", flush=True)
-                    for i, r in enumerate(results):
-                        print(f"{i+1}. {r.get('name')}, {r.get('admin1', '')}, {r.get('country')}", flush=True)
                     
                     # Create selection options
                     location_options = [

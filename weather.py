@@ -3,9 +3,16 @@ Weather API Script
 Gets current temperature for any location using Open-Meteo API (free, no API key required)
 """
 
+import os
 import requests
 import sys
 from datetime import datetime
+
+try:
+    # Lazy import; only used if OPENAI_API_KEY is set
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 def get_location_by_name(location_name, auto_select=True):
     """Get coordinates for a location name using geocoding API."""
@@ -154,6 +161,110 @@ def get_weather_description(weather_code):
     }
     return weather_codes.get(weather_code, "Unknown")
 
+def _build_local_overview(location, weather_data, style: str = "concise") -> str:
+    """Create a simple local overview without AI (used on quota errors)."""
+    current = weather_data.get('current', {}) if weather_data else {}
+    temperature = current.get('temperature_2m')
+    humidity = current.get('relative_humidity_2m')
+    wind = current.get('wind_speed_10m')
+    code = current.get('weather_code')
+    conditions = get_weather_description(code)
+    city = (location or {}).get('city', 'Unknown')
+    region = (location or {}).get('region', '')
+    country = (location or {}).get('country', '')
+    tone_prefix = "Brief:" if style == "concise" else style.capitalize() + ":"
+    return (
+        f"{tone_prefix} {city}, {region}, {country}: {conditions}. "
+        f"Temp {temperature}°F, humidity {humidity}%, wind {wind} mph."
+    )
+
+def generate_ai_overview(location, weather_data, model: str = "gpt-4o-mini", style: str = "concise"):
+    """Generate an AI-powered weather overview using OpenAI.
+
+    Reads OPENAI_API_KEY from environment. Requires `openai` package.
+    Returns a string with the overview, or None if unavailable.
+    """
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key or OpenAI is None:
+        return None
+
+    try:
+        client = OpenAI(api_key=api_key)
+
+        # Build a compact context from available data
+        current = weather_data.get('current', {}) if weather_data else {}
+        temperature = current.get('temperature_2m')
+        humidity = current.get('relative_humidity_2m')
+        wind = current.get('wind_speed_10m')
+        code = current.get('weather_code')
+        conditions = get_weather_description(code)
+
+        city = location.get('city') if location else 'Unknown'
+        region = location.get('region') if location else ''
+        country = location.get('country') if location else ''
+
+        tone = "concise, friendly" if style == "concise" else style
+        prompt = (
+            f"Provide a {tone} weather overview for {city}, {region}, {country}. "
+            f"Current conditions: {conditions}, temp {temperature}°F, humidity {humidity}%, wind {wind} mph. "
+            "Avoid speculation beyond available current data; do not fabricate forecasts. "
+            "Keep it short (1-2 sentences)."
+        )
+
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful weather assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=120,
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        # If quota exceeded or 429, return local summary instead of error text
+        msg = str(e).lower()
+        if 'insufficient_quota' in msg or 'code: 429' in msg or 'status code: 429' in msg:
+            return _build_local_overview(location, weather_data, style=style)
+        # Generic fallback keeps things graceful
+        return f"(AI overview error: {e})"
+
+def _parse_cli_flags(argv: list[str]):
+    """Parse CLI flags and return a dict and remaining args for location.
+
+    Supports:
+      --select / -s : interactive selection mode
+      --ai          : enable AI overview
+      --model NAME  : choose OpenAI model (default gpt-4o-mini)
+      --style NAME  : overview style (default concise)
+    """
+    flags = {"interactive": ('--select' in argv or '-s' in argv), "ai": ('--ai' in argv), "model": "gpt-4o-mini", "style": "concise"}
+    remaining = []
+    skip_next = False
+    for i, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ('--select', '-s', '--ai'):
+            continue
+        if arg.startswith('--model='):
+            flags['model'] = arg.split('=', 1)[1]
+            continue
+        if arg == '--model' and i + 1 < len(argv):
+            flags['model'] = argv[i + 1]
+            skip_next = True
+            continue
+        if arg.startswith('--style='):
+            flags['style'] = arg.split('=', 1)[1]
+            continue
+        if arg == '--style' and i + 1 < len(argv):
+            flags['style'] = argv[i + 1]
+            skip_next = True
+            continue
+        # non-flag
+        remaining.append(arg)
+    return flags, remaining
+
 def main(custom_location=None, interactive=False):
     """Main function to get and display weather."""
     location = get_location_by_name(custom_location, auto_select=not interactive) if custom_location else get_current_location()
@@ -180,6 +291,16 @@ def main(custom_location=None, interactive=False):
     
     # Display results
     print(f"🌡️  {temperature}°F | 💧 {humidity}% | 💨 {wind_speed} mph | {conditions}")
+
+    # Optionally generate AI overview if requested via CLI flag
+    # Optionally generate AI overview if requested via CLI flags
+    flags, _ = _parse_cli_flags(sys.argv[1:])
+    if flags.get('ai'):
+        overview = generate_ai_overview(location, weather_data, model=flags.get('model', 'gpt-4o-mini'), style=flags.get('style', 'concise'))
+        if overview:
+            print("\n🤖 AI Weather Overview:\n" + overview)
+        else:
+            print("\n🤖 AI Weather Overview unavailable (missing API key or client).")
     
     return temperature
 
@@ -216,12 +337,9 @@ def interactive_mode():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        # Check if --select or -s flag is present
-        interactive = '--select' in sys.argv or '-s' in sys.argv
-        
-        # Remove flag from arguments and join location
-        args = [arg for arg in sys.argv[1:] if arg not in ['--select', '-s']]
-        location_arg = ' '.join(args) if args else None
+        flags, remaining = _parse_cli_flags(sys.argv[1:])
+        interactive = flags['interactive']
+        location_arg = ' '.join(remaining) if remaining else None
         
         if location_arg:
             main(custom_location=location_arg, interactive=interactive)

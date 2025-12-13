@@ -8,6 +8,17 @@ import streamlit as st
 import requests
 from datetime import datetime, timezone, timedelta
 import streamlit.components.v1 as components
+import os
+from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 # Page configuration
 st.set_page_config(
@@ -397,6 +408,7 @@ def get_weather(latitude, longitude, model='best_match'):
             'longitude': longitude,
             'current': 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code',
             'hourly': 'temperature_2m,precipitation_probability,precipitation,weather_code',
+            'daily': 'sunrise,sunset,daylight_duration,sunshine_duration,uv_index_max',
             'temperature_unit': 'fahrenheit',
             'wind_speed_unit': 'mph',
             'forecast_days': 3,  # 3 days = 72 hours of hourly forecast
@@ -540,8 +552,57 @@ def get_weather_description(weather_code):
     }
     return weather_codes.get(weather_code, "Unknown")
 
-def get_weather_emoji(conditions):
-    """Get emoji based on weather conditions."""
+def get_weather_emoji(conditions, time_str=None):
+    """Get emoji based on weather conditions and time of day.
+    
+    Args:
+        conditions: Weather condition string
+        time_str: Optional ISO format time string (e.g., "2024-12-12T22:00")
+                  If provided and it's nighttime, uses night-appropriate emojis
+    """
+    # Determine if it's nighttime (6 PM to 6 AM)
+    is_night = False
+    if time_str:
+        try:
+            from datetime import datetime
+            if 'T' in time_str:
+                dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                hour = dt.hour
+                is_night = hour >= 18 or hour < 6  # 6 PM to 6 AM
+        except:
+            pass
+    
+    # Night-specific emojis
+    if is_night:
+        night_emoji = {
+            "Clear sky": "🌙",
+            "Mainly clear": "🌙",
+            "Partly cloudy": "☁️",
+            "Overcast": "☁️",
+            "Foggy": "🌫️",
+            "Depositing rime fog": "🌫️",
+            "Light drizzle": "🌧️",
+            "Moderate drizzle": "🌧️",
+            "Dense drizzle": "🌧️",
+            "Slight rain": "🌧️",
+            "Moderate rain": "🌧️",
+            "Heavy rain": "⛈️",
+            "Slight snow": "🌨️",
+            "Moderate snow": "❄️",
+            "Heavy snow": "❄️",
+            "Snow grains": "❄️",
+            "Slight rain showers": "🌧️",
+            "Moderate rain showers": "🌧️",
+            "Violent rain showers": "⛈️",
+            "Slight snow showers": "🌨️",
+            "Heavy snow showers": "❄️",
+            "Thunderstorm": "⛈️",
+            "Thunderstorm with slight hail": "⛈️",
+            "Thunderstorm with heavy hail": "⛈️"
+        }
+        return night_emoji.get(conditions, "🌙")
+    
+    # Daytime emojis
     weather_emoji = {
         "Clear sky": "☀️",
         "Mainly clear": "🌤️",
@@ -585,20 +646,16 @@ def get_visual_crossing_outlook(latitude, longitude):
         # Sign up at: https://www.visualcrossing.com/sign-up
         # Free tier: 1000 records/day
         
-        # Default API key (can be overridden by user in sidebar)
-        default_api_key = 'GFKCTJBLVG3LLFNSDEPAP745D'
-        
-        # Get API key from session state first (user's custom key)
+        # Get API key from session state first (user's custom key in sidebar)
         api_key = st.session_state.get('visual_crossing_api_key', '')
         
         if not api_key:
-            # Try environment variable
-            import os
+            # Try environment variable (recommended for security)
             api_key = os.environ.get('VISUAL_CROSSING_API_KEY', '')
         
         if not api_key:
-            # Use default API key
-            api_key = default_api_key
+            # No API key configured - Visual Crossing features will be disabled
+            return None
         
         # Build API URL - request only today's data to minimize record usage
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{latitude},{longitude}/today"
@@ -659,20 +716,16 @@ def get_visual_crossing_forecast(latitude, longitude):
     Returns weather data in a format compatible with display_weather() function.
     """
     try:
-        # Default API key (can be overridden by user in sidebar)
-        default_api_key = 'GFKCTJBLVG3LLFNSDEPAP745D'
-        
-        # Get API key from session state first (user's custom key)
+        # Get API key from session state first (user's custom key in sidebar)
         api_key = st.session_state.get('visual_crossing_api_key', '')
         
         if not api_key:
-            # Try environment variable
-            import os
+            # Try environment variable (recommended for security)
             api_key = os.environ.get('VISUAL_CROSSING_API_KEY', '')
         
         if not api_key:
-            # Use default API key
-            api_key = default_api_key
+            # No API key configured - return None to use Open-Meteo instead
+            return None
         
         # Build API URL - request 3 days of data with hourly details
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{latitude},{longitude}"
@@ -758,6 +811,439 @@ def convert_wind(wind_mph, to_kmh=False):
     if to_kmh:
         return wind_mph * 1.60934
     return wind_mph
+
+def display_sun_times(weather_data):
+    """Display sunrise, sunset, and twilight information from daily weather data.
+    
+    Args:
+        weather_data: Weather data dict containing 'daily' with sun times
+    """
+    try:
+        daily = weather_data.get('daily', {})
+        if not daily:
+            return
+        
+        # Get today's data (first entry)
+        sunrise = daily.get('sunrise', [None])[0]
+        sunset = daily.get('sunset', [None])[0]
+        daylight_duration = daily.get('daylight_duration', [None])[0]
+        sunshine_duration = daily.get('sunshine_duration', [None])[0]
+        uv_index = daily.get('uv_index_max', [None])[0]
+        
+        if not sunrise or not sunset:
+            return
+        
+        from datetime import datetime, timedelta
+        
+        # Parse sunrise and sunset times
+        sunrise_dt = datetime.fromisoformat(sunrise.replace('Z', '+00:00'))
+        sunset_dt = datetime.fromisoformat(sunset.replace('Z', '+00:00'))
+        
+        # Format times
+        sunrise_time = sunrise_dt.strftime('%I:%M %p').lstrip('0')
+        sunset_time = sunset_dt.strftime('%I:%M %p').lstrip('0')
+        
+        # Estimate civil twilight (approximately 25-30 minutes before sunrise / after sunset)
+        # Civil twilight is when the sun is between 0° and 6° below the horizon
+        first_light_dt = sunrise_dt - timedelta(minutes=28)
+        last_light_dt = sunset_dt + timedelta(minutes=28)
+        
+        first_light = first_light_dt.strftime('%I:%M %p').lstrip('0')
+        last_light = last_light_dt.strftime('%I:%M %p').lstrip('0')
+        
+        # Convert daylight duration from seconds to hours and minutes
+        if daylight_duration:
+            hours = int(daylight_duration // 3600)
+            minutes = int((daylight_duration % 3600) // 60)
+            daylight_str = f"{hours}h {minutes}m"
+        else:
+            daylight_str = "N/A"
+        
+        # Sunshine duration (actual sunshine vs possible daylight)
+        if sunshine_duration:
+            sun_hours = int(sunshine_duration // 3600)
+            sun_minutes = int((sunshine_duration % 3600) // 60)
+            sunshine_str = f"{sun_hours}h {sun_minutes}m"
+            sunshine_percent = int((sunshine_duration / daylight_duration * 100)) if daylight_duration else 0
+        else:
+            sunshine_str = "N/A"
+            sunshine_percent = 0
+        
+        # UV Index color coding
+        if uv_index:
+            if uv_index < 3:
+                uv_color = "#2ecc71"  # Green - Low
+                uv_level = "Low"
+            elif uv_index < 6:
+                uv_color = "#f39c12"  # Yellow - Moderate
+                uv_level = "Moderate"
+            elif uv_index < 8:
+                uv_color = "#e67e22"  # Orange - High
+                uv_level = "High"
+            elif uv_index < 11:
+                uv_color = "#e74c3c"  # Red - Very High
+                uv_level = "Very High"
+            else:
+                uv_color = "#8e44ad"  # Purple - Extreme
+                uv_level = "Extreme"
+        else:
+            uv_color = "#888"
+            uv_level = "N/A"
+        
+        # Display sun times in an attractive card
+        st.markdown(f"""<div style='background: linear-gradient(135deg, rgba(255, 183, 77, 0.15) 0%, rgba(255, 112, 67, 0.15) 100%); border: 1px solid rgba(255, 183, 77, 0.3); border-radius: 15px; padding: 20px; margin: 20px 0; box-shadow: 0 4px 15px rgba(0,0,0,0.2);'>
+<div style='text-align: center; margin-bottom: 15px;'>
+<span style='font-size: 24px; font-weight: 600; color: #FFB74D;'>☀️ Sun & Light Information</span>
+</div>
+<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;'>
+<div style='background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 10px; text-align: center;'>
+<div style='font-size: 28px; margin-bottom: 5px;'>🌅</div>
+<div style='font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 1px;'>First Light</div>
+<div style='font-size: 20px; font-weight: 600; color: #FFB74D; margin-top: 5px;'>{first_light}</div>
+<div style='font-size: 11px; color: #888; margin-top: 3px;'>Civil Twilight</div>
+</div>
+<div style='background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 10px; text-align: center;'>
+<div style='font-size: 28px; margin-bottom: 5px;'>🌄</div>
+<div style='font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 1px;'>Sunrise</div>
+<div style='font-size: 20px; font-weight: 600; color: #FF9800; margin-top: 5px;'>{sunrise_time}</div>
+<div style='font-size: 11px; color: #888; margin-top: 3px;'>Sun appears</div>
+</div>
+<div style='background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 10px; text-align: center;'>
+<div style='font-size: 28px; margin-bottom: 5px;'>🌇</div>
+<div style='font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 1px;'>Sunset</div>
+<div style='font-size: 20px; font-weight: 600; color: #FF7043; margin-top: 5px;'>{sunset_time}</div>
+<div style='font-size: 11px; color: #888; margin-top: 3px;'>Sun disappears</div>
+</div>
+<div style='background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 10px; text-align: center;'>
+<div style='font-size: 28px; margin-bottom: 5px;'>🌆</div>
+<div style='font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 1px;'>Last Light</div>
+<div style='font-size: 20px; font-weight: 600; color: #FF5722; margin-top: 5px;'>{last_light}</div>
+<div style='font-size: 11px; color: #888; margin-top: 3px;'>Civil Twilight</div>
+</div>
+</div>
+<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255, 183, 77, 0.2);'>
+<div style='text-align: center;'>
+<div style='font-size: 11px; color: #aaa; text-transform: uppercase;'>Daylight</div>
+<div style='font-size: 16px; font-weight: 600; color: #FFD54F; margin-top: 3px;'>{daylight_str}</div>
+</div>
+<div style='text-align: center;'>
+<div style='font-size: 11px; color: #aaa; text-transform: uppercase;'>Sunshine</div>
+<div style='font-size: 16px; font-weight: 600; color: #FFCA28; margin-top: 3px;'>{sunshine_str}</div>
+<div style='font-size: 10px; color: #888;'>({sunshine_percent}% of day)</div>
+</div>
+<div style='text-align: center;'>
+<div style='font-size: 11px; color: #aaa; text-transform: uppercase;'>UV Index</div>
+<div style='font-size: 16px; font-weight: 600; color: {uv_color}; margin-top: 3px;'>{uv_index:.0f} - {uv_level}</div>
+</div>
+</div>
+</div>""", unsafe_allow_html=True)
+        
+    except Exception as e:
+        # Silently fail if sun data not available
+        pass
+
+# ===== AI Overview (OpenAI) =====
+def build_hourly_summary(hourly: Dict[str, Any], start_idx: int, hours_to_show: int = 24) -> List[Dict[str, Any]]:
+    """Extract a compact hourly slice for AI summarization (up to 24 hours)."""
+    times = hourly.get('time', [])
+    temps = hourly.get('temperature_2m', [])
+    codes = hourly.get('weather_code', [])
+    probs = hourly.get('precipitation_probability', [])
+    precips = hourly.get('precipitation', [])
+    end = min(len(times), start_idx + hours_to_show)
+    summary = []
+    for i in range(start_idx, end):
+        hour = {
+            'time': times[i],
+            'temp_f': temps[i] if i < len(temps) else None,
+            'wmo_code': codes[i] if i < len(codes) else None,
+            'precip_prob': probs[i] if i < len(probs) else None,
+            'precip_mm': precips[i] if i < len(precips) else None,
+        }
+        summary.append(hour)
+    return summary
+
+def get_openai_client():
+    """Initialize OpenAI client using environment variable."""
+    # Load API key from environment variable
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key:
+        return None
+    try:
+        client = OpenAI(api_key=api_key)
+        return client
+    except Exception:
+        return None
+
+def generate_ai_overview(location: Dict[str, Any], hourly_slice: List[Dict[str, Any]]) -> str:
+    """Use Perplexity AI to produce a web-based, human-friendly weather overview from hourly forecast data."""
+    # Perplexity API configuration - load from environment variable
+    perplexity_api_key = os.environ.get('PERPLEXITY_API_KEY', '')
+    
+    if not perplexity_api_key:
+        return "⚠️ Perplexity API key not configured. Please set PERPLEXITY_API_KEY environment variable."
+    
+    if not perplexity_api_key:
+        return "🌐 Web-Based AI Weather Overview unavailable: API key not configured."
+
+    city = location.get('city', 'Unknown')
+    region = location.get('region', '')
+    country = location.get('country', '')
+    
+    # Get current date for context
+    from datetime import datetime
+    today = datetime.now().strftime('%B %d, %Y')
+
+    # Build hourly data summary for the prompt
+    if not hourly_slice:
+        return "AI overview unavailable: missing hourly data."
+    
+    # Format hourly data into readable text (next 48 hours)
+    hours_text = []
+    for h in hourly_slice[:48]:
+        time_str = h.get('time', '')
+        temp = h.get('temp_f')
+        precip_prob = h.get('precip_prob', 0)
+        precip_mm = h.get('precip_mm', 0)
+        
+        # Format: "2023-12-13T14:00 -> 72°F, 30% precip chance, 0.5mm"
+        temp_str = f"{int(temp)}°F" if temp else "N/A"
+        hours_text.append(f"{time_str} -> {temp_str}, {precip_prob}% precip, {precip_mm}mm")
+    
+    hours_blob = "\n".join(hours_text)
+
+    system_msg = (
+        "You are a precise, thorough weather forecaster with access to real-time web information. "
+        "You will receive hourly weather data and transform it into a richly detailed, practical 2-day forecast "
+        "enriched with current web-based weather intelligence from trusted meteorological sources. "
+        "Use a natural, flowing narrative style with complete sentences and professional weather language. "
+        "Be explicit about when precipitation starts, peaks, and ends with specific time callouts. "
+        "Leverage your web search capabilities to provide context about current weather patterns, systems, and trends."
+    )
+
+    user_msg = (
+        f"Location: {city}, {region}, {country}\n"
+        f"Date: {today}\n\n"
+        f"HOURLY FORECAST DATA (next 48 hours):\n{hours_blob}\n\n"
+        f"Using your web search capabilities, find current weather patterns, advisories, and meteorological context for {city}, {region}. "
+        f"Then create a comprehensive forecast using this EXACT format:\n\n"
+        f"🌨️ <DayName> — <Full Date (e.g., December 13, 2025)>\n"
+        f"==================================================\n\n"
+        f"**General**\n\n"
+        f"<2-3 complete sentences describing overall conditions, sky cover, and primary weather pattern for the day.>\n\n"
+        f"**Temperatures**\n\n"
+        f"🌡️ High: ~<high°F> (<high°C>)\n\n"
+        f"🌡️ Low: ~<low°F> (<low°C>) overnight\n\n"
+        f"<Additional sentence about temperature feel and trends.>\n\n"
+        f"**Precipitation Timeline**\n\n"
+        f"☀️ **Morning (6 AM - 11 AM):**\n"
+        f"<Natural narrative with specific hours and percentages if precip occurs, or 'No precipitation expected.'>\n\n"
+        f"🌤️ **Afternoon (12 PM - 5 PM):**\n"
+        f"<Natural narrative with specific hours like '2 PM: 65% chance' if precip occurs, or 'Dry conditions.'>\n\n"
+        f"🌙 **Evening (6 PM - 11 PM):**\n"
+        f"<Natural narrative describing evening precip with specific hours and intensity changes, or 'Clear skies.'>\n\n"
+        f"🌃 **Night (12 AM - 5 AM):**\n"
+        f"<Natural narrative describing overnight precip with specific hours, or 'No precipitation overnight.'>\n\n"
+        f"**Winds & Conditions**\n\n"
+        f"<Complete sentences about overall conditions based on the data patterns.>\n\n"
+        f"[Repeat exact same format for Day 2]\n\n"
+        f"==================================================\n\n"
+        f"**📊 2-Day Summary**\n\n"
+        f"<DayName>: <One-sentence summary highlighting key weather impacts.>\n\n"
+        f"<DayName>: <One-sentence summary highlighting key weather impacts.>\n\n"
+        f"<Additional summary sentence about overall pattern or temperatures.>\n\n"
+        f"CRITICAL FORMATTING RULES:\n"
+        f"- Use double line breaks between sections\n"
+        f"- Write in complete, natural sentences (not bullet points)\n"
+        f"- Break precipitation into 4 time periods: Morning/Afternoon/Evening/Night with emojis\n"
+        f"- Call out specific hours with percentages: '7 AM: 45%', '2 PM: 65% chance'\n"
+        f"- Use weather terminology: 'accumulating snow', 'lingering showers', 'tapering off'\n"
+        f"- Include transitions: 'developing', 'becomes steadier', 'continuing into'\n"
+        f"- Add separator lines (==================================================) for visual organization"
+    )
+
+    def local_overview() -> str:
+        """Build a detailed, non-AI 2-day overview from hourly data (next 48 hours).
+        Includes likely precipitation hours per day and temperature ranges.
+        """
+        if not hourly_slice:
+            return "Local overview unavailable: missing hourly data."
+        city = location.get('city', 'Unknown')
+        region = location.get('region', '')
+        country = location.get('country', '')
+
+        window = hourly_slice[:48]
+        from datetime import datetime
+        # Group by day (local date derived from ISO timestamp; assumes provided times are local or UTC-consistent)
+        days = {}
+        for h in window:
+            ts = h.get('time')
+            try:
+                dt = datetime.fromisoformat(ts.replace('Z','+00:00'))
+                day_key = dt.strftime('%Y-%m-%d')
+                hour_label = dt.strftime('%-I %p')
+            except Exception:
+                # Fallback to raw string
+                day_key = (ts or '')[:10]
+                hour_label = ts
+            days.setdefault(day_key, []).append({
+                'temp_f': h.get('temp_f'),
+                'precip_prob': h.get('precip_prob') or 0,
+                'precip_mm': h.get('precip_mm') or 0.0,
+                'label': hour_label,
+            })
+
+        lines = []
+        lines.append(f"**Detailed 2-Day Weather Overview for {city}, {region}, {country}**\n")
+        
+        for i, (day, entries) in enumerate(sorted(days.items())):
+            # Parse day for better formatting
+            try:
+                day_dt = datetime.fromisoformat(day)
+                day_name = day_dt.strftime('%A')
+                full_date = day_dt.strftime('%B %d, %Y')
+                day_header = f"🌨️ {day_name} — {full_date}"
+            except Exception:
+                day_header = f"📅 {day}"
+            
+            lines.append(f"\n{day_header}")
+            lines.append("=" * 50)
+            
+            # Temperature analysis
+            temps = [e['temp_f'] for e in entries if e['temp_f'] is not None]
+            if temps:
+                tmin = int(round(min(temps)))
+                tmax = int(round(max(temps)))
+                tmin_c = int(round((tmin - 32) * 5/9))
+                tmax_c = int(round((tmax - 32) * 5/9))
+                
+                lines.append(f"\n🌡️ **Temperature Range:**")
+                lines.append(f"   • High: ~{tmax}°F ({tmax_c}°C)")
+                lines.append(f"   • Low: ~{tmin}°F ({tmin_c}°C)")
+                
+                # Temperature description
+                temp_range = tmax - tmin
+                if temp_range > 20:
+                    lines.append(f"   • Significant temperature variation of {temp_range}°F throughout the day")
+                else:
+                    lines.append(f"   • Relatively stable temperatures with {temp_range}°F variation")
+            else:
+                lines.append("\n🌡️ **Temperature Range:** Data unavailable")
+            
+            # Precipitation analysis
+            pmax = int(max([e['precip_prob'] for e in entries])) if entries else 0
+            total_mm = round(sum([e['precip_mm'] for e in entries]), 2)
+            total_inches = round(total_mm * 0.0393701, 2)
+            
+            lines.append(f"\n� **Precipitation:**")
+            lines.append(f"   • Maximum probability: {pmax}%")
+            lines.append(f"   • Total accumulation: ~{total_mm} mm ({total_inches} inches)")
+            
+            # Detailed hourly precipitation breakdown
+            precip_hours = [
+                (e['label'], int(e['precip_prob']), round(e['precip_mm'], 2))
+                for e in entries if (e['precip_prob'] >= 25 or e['precip_mm'] >= 0.5)
+            ]
+            
+            if precip_hours:
+                lines.append(f"\n⏰ **Precipitation Timeline:** (Times with ≥25% chance or ≥0.5mm)")
+                
+                # Group by time of day
+                morning = [(h, p, m) for h, p, m in precip_hours if 'AM' in h and not ('12 AM' in h)]
+                afternoon = [(h, p, m) for h, p, m in precip_hours if ('12 PM' in h or ('PM' in h and int(h.split()[0]) <= 5))]
+                evening = [(h, p, m) for h, p, m in precip_hours if 'PM' in h and int(h.split()[0]) > 5]
+                night = [(h, p, m) for h, p, m in precip_hours if '12 AM' in h or ('AM' in h and int(h.split()[0]) >= 11)]
+                
+                if morning:
+                    lines.append(f"\n   ☀️ **Morning (6 AM - 11 AM):** {len(morning)} hour(s)")
+                    for h, p, m in morning:
+                        lines.append(f"      • {h}: {p}% probability, {m} mm expected")
+                
+                if afternoon:
+                    lines.append(f"\n   🌤️ **Afternoon (12 PM - 5 PM):** {len(afternoon)} hour(s)")
+                    for h, p, m in afternoon:
+                        lines.append(f"      • {h}: {p}% probability, {m} mm expected")
+                
+                if evening:
+                    lines.append(f"\n   🌙 **Evening (6 PM - 11 PM):** {len(evening)} hour(s)")
+                    for h, p, m in evening:
+                        lines.append(f"      • {h}: {p}% probability, {m} mm expected")
+                
+                if night:
+                    lines.append(f"\n   🌃 **Night (12 AM - 5 AM):** {len(night)} hour(s)")
+                    for h, p, m in night:
+                        lines.append(f"      • {h}: {p}% probability, {m} mm expected")
+                
+                # Summary
+                if pmax >= 70:
+                    lines.append(f"\n   📌 **Alert:** High precipitation probability. Plan for wet conditions.")
+                elif pmax >= 40:
+                    lines.append(f"\n   📌 **Note:** Moderate precipitation expected. Carry an umbrella.")
+                else:
+                    lines.append(f"\n   📌 **Note:** Low to moderate precipitation chance.")
+            else:
+                lines.append(f"   • No significant precipitation expected")
+                lines.append(f"   📌 **Note:** Dry conditions expected throughout the day")
+            
+            lines.append("")  # Blank line between days
+        
+        # Overall summary
+        lines.append("\n" + "=" * 50)
+        lines.append("📊 **2-Day Summary:**")
+        all_temps = []
+        all_precip_prob = []
+        all_precip_mm = []
+        for day, entries in sorted(days.items()):
+            all_temps.extend([e['temp_f'] for e in entries if e['temp_f'] is not None])
+            all_precip_prob.extend([e['precip_prob'] for e in entries])
+            all_precip_mm.extend([e['precip_mm'] for e in entries])
+        
+        if all_temps:
+            overall_high = int(round(max(all_temps)))
+            overall_low = int(round(min(all_temps)))
+            lines.append(f"   • Overall temperature range: {overall_low}°F to {overall_high}°F")
+        
+        if all_precip_prob:
+            avg_precip_prob = int(sum(all_precip_prob) / len(all_precip_prob))
+            total_precip_mm = round(sum(all_precip_mm), 2)
+            total_precip_in = round(total_precip_mm * 0.0393701, 2)
+            lines.append(f"   • Average precipitation probability: {avg_precip_prob}%")
+            lines.append(f"   • Total 48-hour precipitation: {total_precip_mm} mm ({total_precip_in} inches)")
+        
+        return "\n".join(lines)
+
+    try:
+        # Use Perplexity AI with web search to generate narrative forecast from hourly data
+        headers = {
+            "Authorization": f"Bearer {perplexity_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "sonar-pro",  # Perplexity's web-search enabled model
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 3500,
+        }
+        
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        return result['choices'][0]['message']['content']
+    except Exception as e:
+        msg = str(e).lower()
+        if 'insufficient_quota' in msg or 'code: 429' in msg or 'status code: 429' in msg:
+            return local_overview()
+        return f"AI overview failed: {e}"
 
 def display_radar(location):
     """Display animated weather radar using RainViewer and OpenStreetMap."""
@@ -1378,6 +1864,177 @@ def display_visual_crossing_radar(location):
     </div>
     """, unsafe_allow_html=True)
 
+def display_windy_radar(location):
+    """Display interactive weather radar using Windy.com embedded map."""
+    st.markdown("<p style='color: #aaa; font-size: 0.9em;'>Windy.com interactive weather map with multiple layers</p>", unsafe_allow_html=True)
+    
+    lat = location['latitude']
+    lon = location['longitude']
+    
+    # Windy.com API key - load from environment variable
+    windy_api_key = os.environ.get('WINDY_API_KEY', '')
+    
+    if not windy_api_key:
+        st.warning("⚠️ Windy.com API key not configured. Windy map unavailable.")
+        return
+    
+    # Use Windy.com's embedded iframe (simplest and most reliable method)
+    windy_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ margin: 0; padding: 0; background: #1e1e2d; }}
+            #windy-container {{ 
+                height: 520px; 
+                width: 100%; 
+                border-radius: 15px;
+                overflow: hidden;
+                border: 2px solid rgba(100, 100, 150, 0.3);
+            }}
+            iframe {{
+                width: 100%;
+                height: 100%;
+                border: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="windy-container">
+            <iframe 
+                src="https://embed.windy.com/embed2.html?lat={lat}&lon={lon}&detailLat={lat}&detailLon={lon}&width=100%&height=520&zoom=8&level=surface&overlay=radar&product=ecmwf&menu=&message=true&marker=&calendar=now&pressure=&type=map&location=coordinates&detail=&metricWind=default&metricTemp=default&radarRange=-1"
+                frameborder="0">
+            </iframe>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Display the embedded Windy map
+    components.html(windy_html, height=540)
+    
+    st.markdown("""
+    <div style='text-align: center; margin-top: 10px; color: #888; font-size: 0.85em;'>
+        🌬️ Powered by <span style='color: #667eea;'>Windy.com</span> - Full interactive weather map<br>
+        Use controls to change layers: Radar, Wind, Temperature, Clouds, Satellite & more
+    </div>
+    """, unsafe_allow_html=True)
+
+def display_weather_alerts(alerts):
+    """Display weather alerts with appropriate styling based on severity."""
+    if not alerts:
+        return
+    
+    # Sort by severity (most severe first)
+    severity_order = {'Extreme': 0, 'Severe': 1, 'Moderate': 2, 'Minor': 3, 'Unknown': 4}
+    sorted_alerts = sorted(alerts, key=lambda x: severity_order.get(x['severity'], 4))
+    
+    for alert in sorted_alerts:
+        # Determine color scheme based on severity
+        if alert['severity'] == 'Extreme':
+            bg_color = '#8B0000'  # Dark red
+            border_color = '#FF0000'
+            icon = '🚨'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Severe':
+            bg_color = '#FF4500'  # Orange red
+            border_color = '#FF6347'
+            icon = '🔥'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Moderate':
+            bg_color = '#FFA500'  # Orange
+            border_color = '#FFB84D'
+            icon = '⚠️'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Minor':
+            bg_color = '#4682B4'  # Steel blue
+            border_color = '#87CEEB'
+            icon = 'ℹ️'
+            text_color = '#FFFFFF'
+        else:  # Unknown
+            bg_color = '#808080'  # Gray
+            border_color = '#A9A9A9'
+            icon = '❓'
+            text_color = '#FFFFFF'
+        
+        # Create alert card
+        alert_html = f"""
+        <div style='background-color: {bg_color}; border-left: 5px solid {border_color}; padding: 15px; margin-bottom: 15px; border-radius: 5px;'>
+            <h3 style='color: {text_color}; margin: 0 0 10px 0;'>{icon} {alert['event']}</h3>
+            <p style='color: {text_color}; margin: 5px 0;'><strong>Severity:</strong> {alert['severity']}</p>
+            <p style='color: {text_color}; margin: 5px 0;'><strong>Start:</strong> {alert['start']}</p>
+            <p style='color: {text_color}; margin: 5px 0;'><strong>End:</strong> {alert['end']}</p>
+            <p style='color: {text_color}; margin: 5px 0;'><strong>Description:</strong> {alert['description']}</p>
+        </div>
+        """
+        st.markdown(alert_html, unsafe_allow_html=True)
+
+def display_weather_alerts(alerts):
+    """Display weather alerts with appropriate styling based on severity."""
+    if not alerts:
+        return
+    
+    # Sort by severity (most severe first)
+    severity_order = {'Extreme': 0, 'Severe': 1, 'Moderate': 2, 'Minor': 3, 'Unknown': 4}
+    sorted_alerts = sorted(alerts, key=lambda x: severity_order.get(x['severity'], 4))
+    
+    for alert in sorted_alerts:
+        # Determine color scheme based on severity
+        if alert['severity'] == 'Extreme':
+            bg_color = '#8B0000'  # Dark red
+            border_color = '#FF0000'
+            icon = '🚨'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Severe':
+            bg_color = '#FF4500'  # Orange red
+            border_color = '#FF6347'
+            icon = '⚠️'
+            text_color = '#FFFFFF'
+        elif alert['severity'] == 'Moderate':
+            bg_color = '#FFA500'  # Orange
+            border_color = '#FFD700'
+            icon = '⚠️'
+            text_color = '#000000'
+        else:  # Minor or Unknown
+            bg_color = '#4682B4'  # Steel blue
+            border_color = '#87CEEB'
+            icon = 'ℹ️'
+            text_color = '#FFFFFF'
+        
+        # Format times if available
+        onset_text = ''
+        if alert['onset']:
+            try:
+                onset_dt = datetime.fromisoformat(alert['onset'].replace('Z', '+00:00'))
+                onset_text = f"<div style='font-size: 12px; opacity: 0.9; margin-top: 5px;'>⏰ Effective: {onset_dt.strftime('%b %d, %I:%M %p')}</div>"
+            except:
+                pass
+        
+        expires_text = ''
+        if alert['expires']:
+            try:
+                expires_dt = datetime.fromisoformat(alert['expires'].replace('Z', '+00:00'))
+                expires_text = f"<div style='font-size: 12px; opacity: 0.9;'>⏱️ Expires: {expires_dt.strftime('%b %d, %I:%M %p')}</div>"
+            except:
+                pass
+        
+        # Create alert box
+        st.markdown(f"""
+        <div style='background: {bg_color}; 
+                    border-left: 5px solid {border_color}; 
+                    padding: 15px; 
+                    border-radius: 10px; 
+                    margin: 15px 0; 
+                    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+                    color: {text_color};'>
+            <div style='font-size: 24px; margin-bottom: 8px;'>{icon} <strong>{alert['event']}</strong></div>
+            <div style='font-size: 14px; opacity: 0.95; margin-bottom: 8px;'>{alert['headline']}</div>
+            {onset_text}
+            {expires_text}
+            <div style='margin-top: 10px; font-size: 13px; line-height: 1.5;'>{alert['description']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 def display_weather_alerts(alerts):
     """Display weather alerts with appropriate styling based on severity."""
     if not alerts:
@@ -1475,8 +2132,9 @@ def display_weather(location, weather_data, model_key='default'):
     humidity = current.get('relative_humidity_2m')
     wind_speed = current.get('wind_speed_10m')
     weather_code = current.get('weather_code')
+    current_time = current.get('time')  # Get current time from API
     conditions = get_weather_description(weather_code)
-    emoji = get_weather_emoji(conditions)
+    emoji = get_weather_emoji(conditions, current_time)  # Pass time for night/day detection
     
     # Location header
     st.markdown(f"<h1 style='text-align: center; color: #e0e0e0; margin-bottom: 5px; margin-top: 0px;'>{location['city']}</h1>", unsafe_allow_html=True)
@@ -1509,6 +2167,9 @@ def display_weather(location, weather_data, model_key='default'):
     # Conditions
     st.markdown(f"<h3 style='text-align: center; color: #bbb; margin-top: 10px; margin-bottom: 20px;'>{conditions}</h3>", unsafe_allow_html=True)
     
+    # Sun times display (sunrise, sunset, first/last light)
+    display_sun_times(weather_data)
+    
     # Daily Outlook - using Visual Crossing API
     outlook = get_visual_crossing_outlook(location['latitude'], location['longitude'])
     
@@ -1530,6 +2191,79 @@ def display_weather(location, weather_data, model_key='default'):
         </div>
         """, unsafe_allow_html=True)
     
+    # 🌐 Web-Based AI Weather Overview (Perplexity)
+    with st.expander("🌐 Web-Based AI Weather Overview", expanded=False):
+        mode = st.selectbox(
+            "Overview mode",
+            ["Web-Based AI (Perplexity)", "Local Detailed (no AI)"], 
+            key=f"overview_mode_select_{model_key}"
+        )
+        if weather_data.get('hourly'):
+            hourly = weather_data['hourly']
+            # Determine start_idx similar to hourly forecast logic
+            all_times = hourly.get('time', [])
+            start_idx = 0
+            if all_times:
+                try:
+                    # Use location timezone if available
+                    tzname = weather_data.get('timezone', 'UTC')
+                    # Fallback to naive matching: find the first time >= now
+                    now_iso = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat(timespec='minutes')
+                    for i, t in enumerate(all_times):
+                        if t >= now_iso:
+                            start_idx = i
+                            break
+                except Exception:
+                    start_idx = 0
+            hourly_slice = build_hourly_summary(hourly, start_idx, hours_to_show=48)
+            if st.button("Generate Overview", key=f"overview_{model_key}"):
+                with st.spinner("🌐 Generating web-based AI overview with real-time weather intelligence..."):
+                    if mode.startswith("Web-Based AI"):
+                        ai_text = generate_ai_overview(location, hourly_slice)
+                    else:
+                        # Local detailed overview without AI
+                        def _local_only(location, slice_):
+                            if not slice_:
+                                return "Local overview unavailable: missing hourly data."
+                            city = location.get('city', 'Unknown')
+                            region = location.get('region', '')
+                            country = location.get('country', '')
+                            window = slice_[:24]
+                            temps = [h.get('temp_f') for h in window if h.get('temp_f') is not None]
+                            t0 = temps[0] if temps else None
+                            tmin = min(temps) if temps else None
+                            tmax = max(temps) if temps else None
+                            precip_hours = []
+                            from datetime import datetime
+                            for h in window:
+                                prob = h.get('precip_prob') or 0
+                                amt = h.get('precip_mm') or 0.0
+                                if prob >= 25 or amt >= 0.5:
+                                    try:
+                                        dt = datetime.fromisoformat(h.get('time').replace('Z','+00:00'))
+                                        label = dt.strftime('%-I %p')
+                                    except Exception:
+                                        label = h.get('time')
+                                    precip_hours.append(f"{label} ({int(prob)}% / {round(amt,2)} mm)")
+                            total_mm = round(sum([(h.get('precip_mm') or 0.0) for h in window]), 2)
+                            pmax = int(max([(h.get('precip_prob') or 0) for h in window]))
+                            lines = []
+                            lines.append(f"Detailed overview for {city}, {region}, {country}:")
+                            if t0 is not None:
+                                lines.append(f"- Temps: start ~{t0}°F; range {tmin}–{tmax}°F today.")
+                            else:
+                                lines.append("- Temps: data unavailable.")
+                            lines.append(f"- Precipitation: max chance ~{pmax}%; total ~{total_mm} mm over the day.")
+                            if precip_hours:
+                                lines.append("- Likely precip hours: " + ", ".join(precip_hours[:12]) + ("…" if len(precip_hours) > 12 else ""))
+                            else:
+                                lines.append("- No significant precipitation expected based on current data.")
+                            return "\n".join(lines)
+                        ai_text = _local_only(location, hourly_slice)
+                    st.markdown(f"<div style='background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); color:#e0e0e0;'>"+ai_text+"</div>", unsafe_allow_html=True)
+        else:
+            st.write("Hourly data unavailable.")
+
     # Check for upcoming precipitation
     precip_alert = check_precipitation_soon(weather_data)
     
@@ -1779,11 +2513,13 @@ def display_weather(location, weather_data, model_key='default'):
                 else:
                     temp_str = "N/A"
                 
-                # Get weather emoji
+                # Get weather emoji (time-aware for night/day)
                 weather_emoji = "🌤️"
                 if idx < len(weather_codes):
                     w_desc = get_weather_description(weather_codes[idx])
-                    weather_emoji = get_weather_emoji(w_desc)
+                    # Pass the time string for night/day detection
+                    time_for_emoji = times[idx] if idx < len(times) else None
+                    weather_emoji = get_weather_emoji(w_desc, time_for_emoji)
                 
                 # Get precipitation probability and amount
                 precip_str = ""
@@ -2085,12 +2821,15 @@ def main():
             
             # Display radar with tabs at bottom (outside weather model tabs, always visible)
             st.markdown("### 🗺️ Weather Radar")
-            radar_tab1, radar_tab2 = st.tabs(["🌧️ RainViewer Radar", "🌤️ Visual Crossing Map"])
+            radar_tab1, radar_tab2, radar_tab3 = st.tabs(["�️ Multi-Layer Radar", "�🌧️ RainViewer Radar", "🌤️ Visual Crossing Map"])
             
             with radar_tab1:
-                display_radar(location)
+                display_windy_radar(location)
             
             with radar_tab2:
+                display_radar(location)
+            
+            with radar_tab3:
                 display_visual_crossing_radar(location)
         else:
             st.error("Could not fetch weather data. Please try again.")
